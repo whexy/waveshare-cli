@@ -132,30 +132,6 @@ and pixel-addressed y coordinates. STATUS reports refresh state; REFRESH uses
 the union of pending BLITs. Image transfer, clear, sleep and BOOTSEL remain
 available. See [`docs/protocol.md`](docs/protocol.md) for the exact contract.
 
-## Verification with the webcam
-
-OBS must be open with the `OsmoPocket3` source active and **Start Virtual
-Camera** enabled. Always resolve the OBS virtual-camera index by name; AVFoundation
-indices are not stable. The virtual camera accepts 60 fps, and approximately 30
-warmup frames must be discarded for exposure to settle.
-
-```sh
-nix develop
-
-idx="$(ffmpeg -hide_banner -f avfoundation -list_devices true -i "" 2>&1 \
-  | sed -n '/video devices/,/audio devices/p' \
-  | sed -n 's/^.*\[\([0-9][0-9]*\)\] OBS Virtual Camera$/\1/p' | head -n1)"
-
-timeout --signal=KILL 10 ffmpeg -hide_banner -loglevel error \
-  -f avfoundation -pixel_format uyvy422 -video_size 1920x1080 -framerate 60 \
-  -i "$idx" -frames:v 30 -update 1 -q:v 2 -y /tmp/epaper.jpg
-```
-
-Captures belong in `/tmp`, never in the repository. Do not capture the DJI
-directly: OBS owns its stream negotiation, and direct AVFoundation capture is
-known to fail or hang. Keep the hard KILL timeout because a blocked frame wait
-can ignore SIGTERM.
-
 ## Known limitations
 
 - The framebuffer protocol and host-rendered console still need physical-panel
