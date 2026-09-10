@@ -8,10 +8,9 @@ let
   # The console rasterises glyphs from a real font file at runtime. Pinning it
   # into the closure keeps `epaper console` working on hosts with no fonts
   # installed; EPAPER_FONT still overrides it.
-  fontPackage = pkgs.nerd-fonts.jetbrains-mono;
+  fontPackage = pkgs.nerd-fonts.terminess-ttf;
   fontFile =
-    "${fontPackage}/share/fonts/truetype/NerdFonts/JetBrainsMono/"
-    + "JetBrainsMonoNerdFontMono-Regular.ttf";
+    "${fontPackage}/share/fonts/truetype/NerdFonts/Terminess/" + "TerminessNerdFontMono-Regular.ttf";
   # The integration test drives the CLI against tools/epdsim.py, which lives
   # outside cli/, so the source has to be assembled from both trees.
   src = lib.fileset.toSource {

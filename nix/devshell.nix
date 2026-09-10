@@ -15,8 +15,8 @@ let
   ]);
   pre-commit-check = import ./checks/pre-commit-check.nix { inherit inputs pkgs; };
   consoleFont =
-    "${pkgs.nerd-fonts.jetbrains-mono}/share/fonts/truetype/NerdFonts/"
-    + "JetBrainsMono/JetBrainsMonoNerdFontMono-Regular.ttf";
+    "${pkgs.nerd-fonts.terminess-ttf}/share/fonts/truetype/NerdFonts/"
+    + "Terminess/TerminessNerdFontMono-Regular.ttf";
 in
 pkgs.mkShell {
   packages = [

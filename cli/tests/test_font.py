@@ -37,9 +37,12 @@ class RasterTests(unittest.TestCase):
         self.assertEqual(bytes(a ^ 0xFF for a in plain), inverse)
 
     def test_nerd_and_box_glyphs_are_distinct_and_inked(self):
+        # U+E0B0 is the powerline separator every prompt theme uses; the rest
+        # are the drawing primitives a TUI frame is built from. Icons outside
+        # this set vary by font and are not the renderer's contract.
         blank = self.font.cell(' ').tobytes()
         seen = {}
-        for text in ('\ue0b0', '\uf09b', '\u2500', '\u2502', '\u2588', 'A'):
+        for text in ('\ue0b0', '\u2500', '\u2502', '\u2588', '\u2591', 'A'):
             bits = self.font.cell(text).tobytes()
             self.assertNotEqual(bits, blank, f'{text!r} rendered blank')
             self.assertNotIn(bits, seen, f'{text!r} collided with {seen.get(bits)!r}')
@@ -77,13 +80,36 @@ class RasterTests(unittest.TestCase):
             self.font.cell(f'x{code}')
         self.assertLessEqual(len(self.font._cache), CACHE_ENTRIES)
 
-    def test_glyphs_are_centred_in_a_tall_cell(self):
-        # A 48px cell is far taller than the em box; an uncentred baseline
-        # parks every line of text against the top of its row.
-        font = Font(find_font(), 8, 48)
-        pixels = font.cell('X').load()
-        inked = [y for y in range(48) if any(pixels[x, y] for x in range(8))]
-        self.assertLessEqual(abs(min(inked) - (47 - max(inked))), 1)
+    def test_full_block_tiles_the_cell_in_both_axes(self):
+        # The block glyph defines the font's own cell box. If it does not
+        # reach every edge, box drawing leaves a seam at each row boundary --
+        # the exact symptom of trusting Nerd-Font-inflated line metrics.
+        for width, height in ((8, 16), (10, 20), (16, 32), (12, 24), (5, 10)):
+            with self.subTest(cell=(width, height)):
+                font = Font(find_font(), width, height)
+                pixels = font.cell('\u2588').load()
+                rows = [
+                    y for y in range(height) if any(pixels[x, y] for x in range(width))
+                ]
+                columns = [
+                    x for x in range(width) if any(pixels[x, y] for y in range(height))
+                ]
+                self.assertEqual(rows, list(range(height)), 'block leaves a row gap')
+                self.assertEqual(
+                    columns, list(range(width)), 'block leaves a column gap'
+                )
+
+    def test_vertical_rule_joins_across_stacked_rows(self):
+        font = Font(find_font(), 8, 16)
+        pixels = font.cell('\u2502').load()
+        inked = [y for y in range(16) if any(pixels[x, y] for x in range(8))]
+        self.assertEqual(inked, list(range(16)), 'vertical rule breaks between rows')
+
+    def test_advance_never_exceeds_the_cell(self):
+        for width, height in ((8, 16), (10, 20), (16, 32), (7, 16), (5, 10)):
+            with self.subTest(cell=(width, height)):
+                font = Font(find_font(), width, height)
+                self.assertLessEqual(font.face.getlength('M'), width)
 
     def test_row_places_cells_at_the_column_pitch(self):
         row = self.font.row([(' ', False), ('A', False)], 16)

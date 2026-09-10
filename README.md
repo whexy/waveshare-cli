@@ -125,7 +125,7 @@ epaper text 'hello, e-paper'
 printf 'hello\r\nworld' | epaper console --stdin
 epaper console --echo -- /bin/zsh
 epaper console --size 80x24 -- /bin/zsh
-epaper console --font ~/.local/share/fonts/MyMonoNerdFont-Regular.ttf
+epaper console --font ~/.local/share/fonts/JetBrainsMonoNerdFontMono-Regular.ttf
 epaper refresh --full
 epaper sleep
 epaper bootsel
@@ -140,14 +140,27 @@ exit the child shell to finish. `--echo` mirrors output locally.
 ### Console font and size
 
 Glyphs are rasterised on the host from a real font file, so nerd-font icons,
-box drawing and Latin accents all render. The default is JetBrains Mono Nerd
-Font, pinned into the Nix closure; `--font PATH` or `EPAPER_FONT` selects
-another, and a Nerd-patched monospace font is the intended replacement.
+box drawing and Latin accents all render. The default is Terminess Nerd Font,
+pinned into the Nix closure; `--font PATH` or `EPAPER_FONT` selects another,
+and any Nerd-patched monospace font works.
+
+Terminess is the default because the panel has no greyscale. It is Terminus
+patched with the Nerd Font glyphs, and its outlines are traced from the
+original bitmaps, so at its design sizes every stem lands on a whole pixel.
+An outline font such as JetBrains Mono is drawn for antialiased rendering; a
+hard threshold gives it uneven stem weights and visibly worse Latin text at
+8x16, even though its icon coverage is equivalent.
 
 Glyphs are rendered antialiased and then thresholded rather than requested as
 monochrome bitmaps. This is what lets box-drawing characters meet across cell
 seams: their strokes sit on fractional pixel boundaries, and monochrome
 rasterisation drops the ones below half coverage, breaking a rule into dashes.
+
+Pixel size is measured per font rather than assumed, picking the largest size
+whose advance fits the cell and whose full-block glyph best fills it. The
+baseline is then seated on that block rather than on the font's line metrics,
+which Nerd Font patching inflates past the cell: trusting them leaves a
+one-pixel seam in every vertical rule at each row boundary.
 
 `--size COLSxROWS` picks the grid. The cell box is `800/COLS` by `480/ROWS`
 rounded down, and the font size follows the cell width, so cells need not be

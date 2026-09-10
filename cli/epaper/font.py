@@ -13,9 +13,15 @@ from collections import OrderedDict
 
 from PIL import Image, ImageChops, ImageDraw, ImageFont
 
-# Nerd Font patched JetBrains Mono advances 600/1000 upem. Deriving the pixel
-# size from the cell width keeps the advance integral and the grid exact.
-ADVANCE_RATIO = 0.6
+# Starting guess for pixel size relative to cell width, refined per font by
+# measuring the real advance. 0.5 suits the bitmap-derived default; outline
+# fonts land near 0.6.
+ADVANCE_RATIO = 0.5
+
+# Glyph whose definition is to fill the character cell completely. Aligning to
+# its ink is how the cell box is located without trusting line metrics, which
+# Nerd Font patching inflates past the cell.
+CELL_PROBE = '\u2588'
 
 # Coverage at which a pixel counts as inked. Below half because the panel
 # renders any set pixel as full black, so thin stems otherwise disappear.
@@ -28,13 +34,15 @@ ENV_FONT = 'EPAPER_FONT'
 # larger than the working set of any one screen.
 CACHE_ENTRIES = 4096
 
+# Terminess is Terminus plus the Nerd Font patch: its outlines are traced from
+# the original bitmaps, so at its design sizes every stem lands on a whole
+# pixel. An outline font thresholded to 1 bit gives uneven stem weights.
 _NAMES = (
-    'JetBrainsMonoNerdFontMono-Regular.ttf',
-    'JetBrainsMonoNLNerdFontMono-Regular.ttf',
-    'JetBrainsMonoNerdFont-Regular.ttf',
+    ('Terminess', 'TerminessNerdFontMono-Regular.ttf'),
+    ('Terminess', 'TerminessNerdFont-Regular.ttf'),
+    ('JetBrainsMono', 'JetBrainsMonoNerdFontMono-Regular.ttf'),
+    ('JetBrainsMono', 'JetBrainsMonoNerdFont-Regular.ttf'),
 )
-
-_NERD_SUBDIR = ('fonts', 'truetype', 'NerdFonts', 'JetBrainsMono')
 
 
 def _roots():
@@ -54,16 +62,18 @@ def find_font():
             raise ValueError(f'{ENV_FONT} is set to {override!r}, which is not a file')
         return override
     for root in _roots():
-        for name in _NAMES:
+        for family, name in _NAMES:
             for path in (
-                os.path.join(root, *_NERD_SUBDIR, name),
+                os.path.join(
+                    root, 'fonts', 'truetype', 'NerdFonts', family, name
+                ),
                 os.path.join(root, 'fonts', name),
                 os.path.join(root, name),
             ):
                 if os.path.isfile(path):
                     return path
     raise ValueError(
-        'no console font found; install a JetBrains Mono Nerd Font or point '
+        'no console font found; install a Nerd Font such as Terminess or point '
         f'{ENV_FONT} at a font file'
     )
 
@@ -75,16 +85,68 @@ class Font:
         self.path = path
         self.width = cell_width
         self.height = cell_height
-        try:
-            self.face = ImageFont.truetype(path, cell_width / ADVANCE_RATIO)
-        except OSError as exc:
-            raise ValueError(f'cannot load font {path!r}: {exc}') from exc
-        ascent, descent = self.face.getmetrics()
-        # Centre the em box in the cell. Glyphs that overflow are clipped to
-        # the cell, which is exactly what full-height box drawing relies on.
-        self.baseline = (cell_height - (ascent + descent)) // 2
+        self.face = self._fit(path, cell_width, cell_height)
+        self.baseline = self._align(cell_height)
         self._blank = Image.new('1', (cell_width, cell_height), 0)
         self._cache = OrderedDict()
+
+    def _fit(self, path, cell_width, cell_height):
+        """Largest pixel size that fills the cell without overflowing it.
+
+        Bitmap-derived fonts render crisply only at their design size and do
+        not share an outline font's advance-to-size ratio, so the size is
+        measured rather than assumed. Candidates are scored on how much of the
+        cell the font's own block glyph covers, which keeps full-height box
+        drawing seamless across rows.
+        """
+        guess = cell_width / ADVANCE_RATIO
+        steps = [round(guess * k / 20) * 20 / 20 for k in (0.7, 0.8, 0.9, 1.0)]
+        sizes = {round(s, 2) for s in steps if s > 0}
+        sizes |= {float(n) for n in range(4, int(guess * 1.6) + 1)}
+        best = None
+        for size in sorted(sizes):
+            try:
+                face = ImageFont.truetype(path, size)
+            except OSError:
+                # Strike-only bitmap fonts reject every size but their own.
+                continue
+            advance = face.getlength('M')
+            if not advance or advance > cell_width:
+                continue
+            covered = self._probe_height(face, cell_height)
+            score = (min(covered, cell_height), advance)
+            if best is None or score > best[0]:
+                best = (score, face)
+        if best is None:
+            try:
+                return ImageFont.truetype(path, guess)
+            except OSError as exc:
+                raise ValueError(f'cannot load font {path!r}: {exc}') from exc
+        return best[1]
+
+    @staticmethod
+    def _probe_height(face, cell_height):
+        """Height of the font's full-block glyph in pixels."""
+        canvas = Image.new('L', (cell_height * 4, cell_height * 4), 0)
+        draw = ImageDraw.Draw(canvas)
+        draw.fontmode = 'L'
+        draw.text((0, cell_height), CELL_PROBE, font=face, fill=255)
+        box = canvas.point(lambda p: 255 if p >= THRESHOLD else 0).getbbox()
+        return 0 if box is None else box[3] - box[1]
+
+    def _align(self, cell_height):
+        """Offset that seats the font's own cell box on the grid."""
+        probe = Image.new('L', (self.width * 3, cell_height * 3), 0)
+        draw = ImageDraw.Draw(probe)
+        draw.fontmode = 'L'
+        draw.text((0, cell_height), CELL_PROBE, font=self.face, fill=255)
+        box = probe.point(lambda p: 255 if p >= THRESHOLD else 0).getbbox()
+        if box is None:
+            ascent, descent = self.face.getmetrics()
+            return (cell_height - (ascent + descent)) // 2
+        # Seat the block's top edge on the cell's top edge so full-height box
+        # drawing tiles across row boundaries with no seam.
+        return cell_height - box[1]
 
     def cell(self, text, inverse=False):
         """The 1-bit bitmap of one cell, black as one."""

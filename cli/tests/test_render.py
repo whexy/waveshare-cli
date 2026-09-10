@@ -91,7 +91,9 @@ class GeometryTests(unittest.TestCase):
                 grid, model, renderer = session(columns, rows)
                 model.feed(b'\x1b[?25l')
                 before = bytes(renderer.render(model))
-                model.feed(b'\x1b[7mhead\x1b[0m \u2500\u252c\u2500 \ue0b0 tail\r\n')
+                model.feed(
+                    '\x1b[7mhead\x1b[0m \u2500\u252c\u2500 \ue0b0 tail\r\n'.encode()
+                )
                 model.feed(b'\r\n'.join(b'x' * columns for _ in range(rows)))
                 current = bytes(renderer.render(model))
                 payloads, _ = diff(before, current, grid.cell_height)
