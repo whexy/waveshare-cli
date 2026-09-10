@@ -90,10 +90,14 @@ The device never sends unsolicited frames.
 ## Console (host side)
 
 The CLI runs the command in a pty, feeds output to a terminal emulator
-(pyte, `TERM=vt100`, 100x30), rasterises dirty rows with an 8x16 font into a
-host shadow of the framebuffer, byte-diffs against the last frame sent, emits
-BLITs for the changed spans (adjacent rows with overlapping x spans merged),
-and then exactly one REFRESH per batch.
+(pyte, `TERM=linux`, 100x30 by default), rasterises dirty rows with a
+host-side font into a shadow of the framebuffer, byte-diffs against the last
+frame sent, emits BLITs for the changed spans (adjacent rows with overlapping
+x spans merged), and then exactly one REFRESH per batch.
+
+The grid is a host concern: the cell box is derived from the selected terminal
+size and the wire format is unaffected. Cell width need not be a multiple of 8
+because rows are rasterised full-width and packed to the fixed 100-byte stride.
 
 Batching policy (host):
 - flush when pty output idle >= 60 ms, or dirty pending >= 250 ms;

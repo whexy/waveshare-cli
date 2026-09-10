@@ -12,6 +12,9 @@ import time
 import tty
 
 from . import protocol as p
+from .font import Font, find_font
+from .geometry import FRAME_BYTES, STRIDE
+from .geometry import geometry as default_geometry
 from .render import Renderer, diff
 from .term import TerminalModel
 
@@ -34,11 +37,15 @@ def _write_all(fd, data):
 
 
 class Session:
-    def __init__(self, device):
+    def __init__(self, device, geometry=None, font=None):
         self.device = device
-        self.model = TerminalModel()
-        self.renderer = Renderer()
-        self.sent = bytearray(48000)
+        self.geometry = geometry or default_geometry()
+        self.font = font or Font(
+            find_font(), self.geometry.cell_width, self.geometry.cell_height
+        )
+        self.model = TerminalModel(self.geometry)
+        self.renderer = Renderer(self.geometry, self.font)
+        self.sent = bytearray(FRAME_BYTES)
         self.units = 0
         self.last_output = time.monotonic()
         self.pending_since = self.last_output
@@ -46,11 +53,10 @@ class Session:
         self.initial = True
 
     def feed(self, data):
-        before = [[self.model.cell(r, c) for c in range(100)] for r in range(30)]
+        rows = range(self.geometry.rows)
+        before = [self.model.row(r) for r in rows]
         replies = self.model.feed(data)
-        content_changed = any(
-            before[r][c] != self.model.cell(r, c) for r in range(30) for c in range(100)
-        )
+        content_changed = any(before[r] != self.model.row(r) for r in rows)
         now = time.monotonic()
         if self.pending_since is None:
             self.pending_since = now
@@ -85,15 +91,21 @@ class Session:
         if state.busy:
             return False
         current = self.renderer.render(self.model)
-        payloads, cost = diff(self.sent, current)
+        payloads, cost = diff(self.sent, current, self.geometry.cell_height)
         # No host readback exists: establish a known framebuffer once before
         # relying on byte diffs, including clearing pixels from a prior client.
         if self.initial:
-            payloads = []
-            for y in range(0, 480, 40):
-                payloads.append(
-                    p.blit(0, y, 100, 40, current[y * 100 : (y + 40) * 100])[1]
-                )
+            band = (p.MAX_PAYLOAD - 8) // STRIDE
+            payloads = [
+                p.blit(
+                    0,
+                    y,
+                    STRIDE,
+                    min(band, 480 - y),
+                    current[y * STRIDE : min(y + band, 480) * STRIDE],
+                )[1]
+                for y in range(0, 480, band)
+            ]
             cost = 3
         full = maintenance or (final and self.units >= FINAL_UNITS)
         if payloads or full:
@@ -125,15 +137,15 @@ def _onlcr(data):
     return data.replace(b'\r\n', b'\n').replace(b'\n', b'\r\n')
 
 
-def text(device, data):
-    session = Session(device)
+def text(device, data, geometry=None, font=None):
+    session = Session(device, geometry, font)
     session.feed(_onlcr(data))
     session.finish()
     return 0
 
 
-def pipe_stdin(device):
-    session = Session(device)
+def pipe_stdin(device, geometry=None, font=None):
+    session = Session(device, geometry, font)
     fd = sys.stdin.fileno()
     while True:
         ready, _, _ = select.select([fd], [], [], 0.02)
@@ -147,9 +159,9 @@ def pipe_stdin(device):
     return 0
 
 
-def run(device, command, echo=False):
-    cols, rows = 100, 30
-    session = Session(device)
+def run(device, command, echo=False, geometry=None, font=None):
+    session = Session(device, geometry, font)
+    cols, rows = session.geometry.columns, session.geometry.rows
     master, slave = pty.openpty()
     child = None
     saved = None

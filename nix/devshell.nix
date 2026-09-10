@@ -14,6 +14,9 @@ let
     ps.pyte
   ]);
   pre-commit-check = import ./checks/pre-commit-check.nix { inherit inputs pkgs; };
+  consoleFont =
+    "${pkgs.nerd-fonts.jetbrains-mono}/share/fonts/truetype/NerdFonts/"
+    + "JetBrainsMono/JetBrainsMonoNerdFontMono-Regular.ttf";
 in
 pkgs.mkShell {
   packages = [
@@ -34,6 +37,10 @@ pkgs.mkShell {
   ];
 
   env.PICO_SDK_PATH = "${picoSdk}/lib/pico-sdk";
+
+  # Running the checkout with `python -m epaper` bypasses the packaged
+  # wrapper, so the shell has to supply the font itself.
+  env.EPAPER_FONT = consoleFont;
 
   shellHook = ''
     ${pre-commit-check.shellHook}

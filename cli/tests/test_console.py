@@ -120,6 +120,28 @@ class SessionTests(unittest.TestCase):
         self.session.tick(final=True)
         self.assertEqual(self.device.calls[-1], (Command.REFRESH, b'\0'))
 
+    def test_initial_upload_tiles_the_panel_exactly(self):
+        from epaper.geometry import STRIDE, geometry
+
+        for columns, rows in ((100, 30), (90, 28), (66, 19), (160, 48)):
+            with self.subTest(size=(columns, rows)):
+                device = Device()
+                session = Session(device, geometry(columns, rows))
+                session.feed(b'\x1b[?25lhello')
+                session.tick(final=True)
+                seen = {}
+                for cmd, payload in device.calls:
+                    if cmd != Command.BLIT:
+                        continue
+                    x0, y0, w, h = struct.unpack_from('<HHHH', payload)
+                    self.assertEqual((x0, w), (0, STRIDE))
+                    self.assertEqual(len(payload) - 8, w * h)
+                    self.assertLessEqual(len(payload), 4096)
+                    for y in range(y0, y0 + h):
+                        self.assertNotIn(y, seen, f'row {y} uploaded twice')
+                        seen[y] = True
+                self.assertEqual(sorted(seen), list(range(480)))
+
     def test_bootsel_lost_ack_and_empty_port(self):
         device = Transport.__new__(Transport)
         with patch.object(device, 'request', side_effect=TimeoutError):
@@ -130,24 +152,31 @@ class SessionTests(unittest.TestCase):
 
 class TerminalModelTests(unittest.TestCase):
     def test_dsr_and_da_replies_are_returned(self):
+        from epaper.geometry import geometry
         from epaper.term import TerminalModel
 
-        model = TerminalModel()
+        model = TerminalModel(geometry())
         self.assertEqual(model.feed(b'\x1b[6n'), b'\x1b[1;1R')
         self.assertTrue(model.feed(b'\x1b[c').startswith(b'\x1b[?'))
         self.assertEqual(model.feed(b'\x1b[?6n'), b'')
 
     def test_piped_lf_returns_to_column_zero(self):
         from epaper.console import _onlcr
+        from epaper.geometry import geometry
+        from epaper.term import TerminalModel
 
-        model = __import__('epaper.term', fromlist=['TerminalModel']).TerminalModel()
+        model = TerminalModel(geometry())
         model.feed(_onlcr(b'ab\ncd\r\nef\n'))
         self.assertEqual(
             [r.rstrip() for r in model.screen.display[:3]], ['ab', 'cd', 'ef']
         )
 
-    def test_box_drawing_has_glyphs(self):
-        from epaper.font import glyph
+    def test_piped_lf_uses_the_configured_width(self):
+        from epaper.console import _onlcr
+        from epaper.geometry import geometry
+        from epaper.term import TerminalModel
 
-        self.assertNotEqual(glyph('\u2500'), glyph('?'))
-        self.assertEqual(glyph('\u4e2d'), glyph('?'))
+        model = TerminalModel(geometry(80, 24))
+        model.feed(_onlcr(b'x' * 100))
+        self.assertEqual(len(model.row(0)), 80)
+        self.assertEqual(model.screen.display[1].rstrip(), 'x' * 20)

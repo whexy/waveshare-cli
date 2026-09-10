@@ -5,6 +5,13 @@
 }:
 let
   inherit (pkgs) lib;
+  # The console rasterises glyphs from a real font file at runtime. Pinning it
+  # into the closure keeps `epaper console` working on hosts with no fonts
+  # installed; EPAPER_FONT still overrides it.
+  fontPackage = pkgs.nerd-fonts.jetbrains-mono;
+  fontFile =
+    "${fontPackage}/share/fonts/truetype/NerdFonts/JetBrainsMono/"
+    + "JetBrainsMonoNerdFontMono-Regular.ttf";
   # The integration test drives the CLI against tools/epdsim.py, which lives
   # outside cli/, so the source has to be assembled from both trees.
   src = lib.fileset.toSource {
@@ -24,6 +31,14 @@ pkgs.python3Packages.buildPythonApplication {
 
   build-system = [ pkgs.python3Packages.setuptools ];
 
+  nativeBuildInputs = [ pkgs.makeWrapper ];
+
+  # A default, not a hard override: an EPAPER_FONT already in the environment
+  # wins, so users can supply their own patched font.
+  postFixup = ''
+    wrapProgram $out/bin/epaper --set-default EPAPER_FONT ${fontFile}
+  '';
+
   dependencies = with pkgs.python3Packages; [
     pyserial
     pillow
@@ -36,6 +51,8 @@ pkgs.python3Packages.buildPythonApplication {
     "tests"
     "-v"
   ];
+
+  env.EPAPER_FONT = fontFile;
 
   pythonImportsCheck = [ "epaper" ];
 

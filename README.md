@@ -2,7 +2,8 @@
 
 Firmware and a host CLI for a Raspberry Pi Pico 2 driving a Waveshare 7.5-inch
 e-paper V2 (800×480). The device supports complete 1-bit pictures and a
-100×30 serial-console display. Host and device communicate over framed USB CDC.
+serial-console display at a configurable grid, 100×30 by default. Host and
+device communicate over framed USB CDC.
 
 The pico-sdk firmware and CLI are under active development; unless explicitly
 noted below, their behavior is currently **unverified** on the physical panel.
@@ -89,7 +90,7 @@ discovery does not select the Pico (consult `epaper --help`; unverified).
 
 ## CLI
 
-The host owns terminal emulation (pyte), ASCII bitmap rasterisation and refresh
+The host owns terminal emulation (pyte), glyph rasterisation and refresh
 batching. The firmware receives only pixels.
 
 The CLI is packaged for `aarch64-darwin`, `aarch64-linux` and `x86_64-linux`.
@@ -123,16 +124,36 @@ epaper draw --testcard
 epaper text 'hello, e-paper'
 printf 'hello\r\nworld' | epaper console --stdin
 epaper console --echo -- /bin/zsh
+epaper console --size 80x24 -- /bin/zsh
+epaper console --font ~/.local/share/fonts/MyMonoNerdFont-Regular.ttf
 epaper refresh --full
 epaper sleep
 epaper bootsel
 ```
 
 Global `--port PORT` (or `EPAPER_PORT`) selects the serial device. `text` starts
-a new 100x30 screen; shell quoting controls literal escapes. For escape bytes
-use `printf` piped to `console --stdin`. `console` defaults to `$SHELL`, sets
-`TERM=linux`, and keeps the PTY fixed at 100x30. Keyboard input stays on the
-host; exit the child shell to finish. `--echo` mirrors output locally.
+a new screen; shell quoting controls literal escapes. For escape bytes use
+`printf` piped to `console --stdin`. `console` defaults to `$SHELL`, sets
+`TERM=linux`, and sizes the PTY to the grid. Keyboard input stays on the host;
+exit the child shell to finish. `--echo` mirrors output locally.
+
+### Console font and size
+
+Glyphs are rasterised on the host from a real font file, so nerd-font icons,
+box drawing and Latin accents all render. The default is JetBrains Mono Nerd
+Font, pinned into the Nix closure; `--font PATH` or `EPAPER_FONT` selects
+another, and a Nerd-patched monospace font is the intended replacement.
+
+Glyphs are rendered antialiased and then thresholded rather than requested as
+monochrome bitmaps. This is what lets box-drawing characters meet across cell
+seams: their strokes sit on fractional pixel boundaries, and monochrome
+rasterisation drops the ones below half coverage, breaking a rule into dashes.
+
+`--size COLSxROWS` picks the grid. The cell box is `800/COLS` by `480/ROWS`
+rounded down, and the font size follows the cell width, so cells need not be
+byte-aligned: 107x30 yields a 7-pixel cell and renders correctly. Sizes whose
+cell falls below 5x10 are rejected as illegible. Any pixels left over below the
+last row stay blank.
 
 The host flushes after 100 ms idle or 400 ms pending output, with a 300 ms
 cursor-motion debounce. Byte differences become bounded BLIT rectangles. The
@@ -168,11 +189,13 @@ available. See [`docs/protocol.md`](docs/protocol.md) for the exact contract.
 
 - The framebuffer protocol and host-rendered console still need physical-panel
   verification; simulator results do not establish waveform quality.
-- Rasterisation uses Spleen ASCII 8x16 plus synthesised box-drawing glyphs;
-  other Unicode becomes `?`.
+- Rasterisation covers whatever the selected font contains; missing codepoints
+  render as that font's tofu box. CJK is not supported: the default font has no
+  CJK coverage, and wide characters are not yet allotted two cells.
 - pyte is a VT emulator, not a complete modern terminal; TERM is intentionally
   linux (no padding, no alternate screen). Reverse-video attributes are supported; color and styled glyphs are not.
 - Partial refresh accumulates ghosting, and periodic full refresh visibly flashes.
-- The console remains fixed at 100x30 and does not resize with the host terminal.
+- The console grid is fixed for the life of a session and does not resize with
+  the host terminal.
 - Only `aarch64-linux` and `aarch64-darwin` builds are exercised here; the
   `x86_64-linux` package evaluates but has not been built or run.

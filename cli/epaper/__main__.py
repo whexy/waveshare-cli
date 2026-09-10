@@ -6,6 +6,8 @@ import serial
 
 from . import console, image
 from . import protocol as p
+from .font import Font, find_font
+from .geometry import DEFAULT_COLUMNS, DEFAULT_ROWS, parse_size
 from .transport import DeviceError, Transport
 
 
@@ -22,6 +24,7 @@ def parser():
     refresh.add_argument('--full', action='store_true')
     text = sub.add_parser('text')
     text.add_argument('text')
+    _console_options(text)
     draw = sub.add_parser('draw')
     source = draw.add_mutually_exclusive_group(required=True)
     source.add_argument('image', nargs='?')
@@ -36,8 +39,30 @@ def parser():
     terminal = sub.add_parser('console')
     terminal.add_argument('--stdin', action='store_true')
     terminal.add_argument('--echo', action='store_true')
+    _console_options(terminal)
     terminal.add_argument('command', nargs=argparse.REMAINDER)
     return root
+
+
+def _console_options(sub):
+    sub.add_argument(
+        '--size',
+        metavar='COLSxROWS',
+        default=f'{DEFAULT_COLUMNS}x{DEFAULT_ROWS}',
+        help='terminal grid, e.g. 80x24 (default: %(default)s)',
+    )
+    sub.add_argument(
+        '--font',
+        metavar='PATH',
+        help='console font file (default: $EPAPER_FONT or a discovered '
+        'JetBrains Mono Nerd Font)',
+    )
+
+
+def _console_setup(args):
+    grid = parse_size(args.size)
+    path = args.font or find_font()
+    return grid, Font(path, grid.cell_width, grid.cell_height)
 
 
 def main(argv=None):
@@ -66,7 +91,8 @@ def main(argv=None):
             elif args.action == 'clear':
                 device.request(*p.clear(args.black))
             elif args.action == 'text':
-                return console.text(device, args.text.encode())
+                grid, face = _console_setup(args)
+                return console.text(device, args.text.encode(), grid, face)
             elif args.action == 'draw':
                 options = dict(
                     fit=args.fit,
@@ -96,12 +122,17 @@ def main(argv=None):
                 command = args.command
                 if command[:1] == ['--']:
                     command = command[1:]
+                grid, face = _console_setup(args)
                 if args.stdin:
                     if command:
                         raise ValueError('--stdin cannot be combined with a command')
-                    return console.pipe_stdin(device)
+                    return console.pipe_stdin(device, grid, face)
                 return console.run(
-                    device, command or [os.environ.get('SHELL', '/bin/sh')], args.echo
+                    device,
+                    command or [os.environ.get('SHELL', '/bin/sh')],
+                    args.echo,
+                    grid,
+                    face,
                 )
         return 0
     except KeyboardInterrupt:

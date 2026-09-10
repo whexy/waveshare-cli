@@ -28,8 +28,9 @@ class _Screen(pyte.Screen):
 
 
 class TerminalModel:
-    def __init__(self):
-        self.screen = _Screen(100, 30)
+    def __init__(self, geometry):
+        self.geometry = geometry
+        self.screen = _Screen(geometry.columns, geometry.rows)
         self.stream = pyte.ByteStream(self.screen)
         self.screen.reset_requested = False
         self.screen.replies = []
@@ -49,10 +50,18 @@ class TerminalModel:
     @property
     def cursor(self):
         c = self.screen.cursor
-        return min(c.x, 99), c.y, not c.hidden
+        return min(c.x, self.geometry.columns - 1), c.y, not c.hidden
 
     def cell(self, row, col):
         return self.screen.buffer[row][col]
+
+    def row(self, row):
+        """Every cell of a row in column order, including untouched ones.
+
+        pyte stores lines sparsely, so indexing the defaultdict is what
+        materialises the default cell for columns never written to."""
+        line = self.screen.buffer[row]
+        return [line[column] for column in range(self.geometry.columns)]
 
     @property
     def reset_requested(self):
