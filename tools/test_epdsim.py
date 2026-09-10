@@ -20,13 +20,15 @@ class SimulatorTests(unittest.TestCase):
             self.assertEqual(send(20,b'\1')[1],0x80)
             self.assertEqual(send(19,b'')[1],0x82)
             self.assertEqual(send(5)[3][0],1)
-            now[0] += .6
+            now[0] = 100.499
+            self.assertEqual(send(5)[3][0],1)
+            now[0] = 100.5
             self.assertEqual(send(5)[3][0],0)
             self.assertTrue(sim.output.exists())
             self.assertEqual(send(20,b'\0')[1],0x80)
-            now[0] += 3.9
+            now[0] = 104.799
             self.assertEqual(send(5)[3][0],1)
-            now[0] += .2
+            now[0] = 104.8
             self.assertEqual(send(5)[3][0],0)
 
 

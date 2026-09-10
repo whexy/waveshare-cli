@@ -20,44 +20,105 @@ class Device:
 
 
 class SessionTests(unittest.TestCase):
-    def test_batch_busy_and_budget(self):
-        with patch('epaper.console.time.monotonic') as clock:
-            clock.return_value = 0
-            device = Device(); session = Session(device)
-            session.feed(b'hello')
-            clock.return_value = .099
-            self.assertFalse(session.tick())
-            self.assertEqual(device.calls,[])
-            clock.return_value = .1
-            device.busy = True
-            self.assertFalse(session.tick())
-            self.assertEqual([c for c,_ in device.calls],[Command.STATUS])
-            device.busy = False
-            self.assertTrue(session.tick())
-            self.assertEqual(device.calls[-1],(Command.REFRESH,b'\1'))
-            self.assertEqual(session.units,3)
-            session.feed(b'\x1b[5;5H')
-            clock.return_value = .399
-            self.assertFalse(session.tick())
-            clock.return_value = .401
-            self.assertTrue(session.tick())
-            session.units = 10
-            session.feed(b'x')
-            clock.return_value = .6
-            self.assertTrue(session.tick())
-            self.assertEqual(device.calls[-1],(Command.REFRESH,b'\0'))
-            self.assertEqual(session.units,0)
-            session.units = 3
-            clock.return_value = 31
-            self.assertTrue(session.tick())
-            self.assertEqual(device.calls[-1],(Command.REFRESH,b'\0'))
+    def setUp(self):
+        self.clock = patch('epaper.console.time.monotonic').start()
+        self.addCleanup(patch.stopall)
+        self.clock.return_value = 0
+        self.device = Device()
+        self.session = Session(self.device)
 
-    def test_reset_forces_full_with_budget(self):
-        device = Device(); session = Session(device)
-        session.tick(final=True)
-        session.feed(b'\x1b[2J')
-        session.tick(final=True)
-        self.assertEqual(device.calls[-1],(Command.REFRESH,b'\0'))
+    def tick_at(self, now, **kwargs):
+        self.clock.return_value = now
+        return self.session.tick(**kwargs)
+
+    def establish(self):
+        self.session.tick(final=True)
+        self.device.calls.clear()
+
+    def test_idle_busy_and_initial_shadow(self):
+        self.session.feed(b'hello')
+        self.assertFalse(self.tick_at(.059))
+        self.assertEqual(self.device.calls, [])
+        self.device.busy = True
+        self.assertFalse(self.tick_at(.06))
+        self.assertEqual(self.device.calls, [(Command.STATUS, b'')])
+        self.assertTrue(self.session.initial)
+        self.device.busy = False
+        self.assertTrue(self.session.tick())
+        blits = [data for cmd, data in self.device.calls if cmd == Command.BLIT]
+        self.assertEqual(len(blits), 12)
+        self.assertEqual(sum(len(data)-8 for data in blits), 48000)
+        self.assertEqual(self.device.calls[-1], (Command.REFRESH, b'\1'))
+        self.assertEqual(self.session.units, 3)
+
+    def test_max_pending_during_continuous_output_stays_partial(self):
+        self.establish()
+        self.session.units = 60
+        self.session.feed(b'a')
+        for now in (.05, .1, .15, .2, .249):
+            self.clock.return_value = now
+            self.session.feed(b'x')
+            self.assertFalse(self.session.tick())
+        self.assertTrue(self.tick_at(.25))
+        self.assertEqual(self.device.calls[-1], (Command.REFRESH, b'\1'))
+
+    def test_cursor_debounce(self):
+        self.establish()
+        self.session.feed(b'\x1b[5;5H')
+        self.assertFalse(self.tick_at(.199))
+        self.assertTrue(self.tick_at(.2))
+        self.assertEqual(self.device.calls[-1], (Command.REFRESH, b'\1'))
+
+    def test_idle_full_thresholds_without_pending_output(self):
+        for units, before, at in ((60, 1.999, 2), (10, 29.999, 30)):
+            with self.subTest(units=units):
+                self.clock.return_value = 0
+                self.session = Session(self.device)
+                self.establish()
+                self.session.units = units
+                self.assertFalse(self.tick_at(before))
+                self.device.busy = True
+                self.assertFalse(self.tick_at(at))
+                self.assertEqual(self.session.units, units)
+                self.device.busy = False
+                self.assertTrue(self.session.tick())
+                self.assertEqual(self.device.calls[-1], (Command.REFRESH, b'\0'))
+                self.assertEqual(self.session.units, 0)
+
+    def test_below_idle_budgets_does_not_refresh(self):
+        self.establish()
+        for units, now in ((59, 2), (9, 30)):
+            self.session.units = units
+            self.assertFalse(self.tick_at(now))
+        self.assertEqual(self.device.calls, [])
+
+    def test_reset_intent_survives_partial_until_idle(self):
+        self.establish()
+        self.session.units = 10
+        self.session.feed(b'\x1b[2Jhello')
+        self.assertTrue(self.tick_at(.06))
+        self.assertEqual(self.device.calls[-1], (Command.REFRESH, b'\1'))
+        self.assertTrue(self.session.model.reset_requested)
+        self.assertFalse(self.tick_at(1.999))
+        self.assertTrue(self.tick_at(2))
+        self.assertEqual(self.device.calls[-1], (Command.REFRESH, b'\0'))
+        self.assertFalse(self.session.model.reset_requested)
+
+    def test_reset_below_budget_and_final_threshold(self):
+        self.establish()
+        self.session.feed(b'\x1b[2J')
+        self.session.units = 9
+        self.assertTrue(self.tick_at(2))
+        self.assertTrue(self.session.model.reset_requested)
+        self.assertNotIn((Command.REFRESH, b'\0'), self.device.calls)
+        self.session.model.clear_reset()
+        self.session.units = 29
+        self.device.calls.clear()
+        self.session.tick(final=True)
+        self.assertNotIn((Command.REFRESH, b'\0'), self.device.calls)
+        self.session.units = 30
+        self.session.tick(final=True)
+        self.assertEqual(self.device.calls[-1], (Command.REFRESH, b'\0'))
 
     def test_bootsel_lost_ack_and_empty_port(self):
         device = Transport.__new__(Transport)

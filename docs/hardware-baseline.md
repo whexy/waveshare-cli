@@ -28,9 +28,17 @@ capture (`/tmp/epaper_probe.jpg`). Treat as authoritative over any doc.
 | MOSI/DIN | 7 (SPI0 TX) |
 | MISO   | 4 (unused by panel) |
 
-SPI0, mode 0, 4 MHz verified working. BUSY: 1 = idle, 0 = busy (pull-up).
+SPI0, mode 0. BUSY: 1 = idle, 0 = busy (pull-up). 4 MHz was verified first;
+8 MHz was verified later over the same jumper wires and is what the firmware
+uses.
 
 ## Panel driver sequence verified working (800x480, 7.5" V2)
+
+This is the original single-shot sequence, kept because it is the reference
+that the orientation and polarity findings below were established with. The
+firmware no longer drives the panel this way: it boots once and keeps the
+panel powered, and partial refreshes use a register LUT rather than the OTP
+waveform. See `fast-refresh.md`.
 
 ```
 reset: RST=1 20ms, RST=0 2ms, RST=1 20ms
@@ -56,7 +64,9 @@ MSB first, top-left pixel first. Register 0x10 was filled with 0x00.
 
 The capture confirmed correct orientation: "TOP-LEFT" text at the top-left
 corner of the panel as seen from the camera; "BOTTOM-RIGHT" at the bottom
-right; no mirroring. Full refresh took ~3.9 s.
+right; no mirroring. Full refresh took ~3.9 s (~4.3 s in the firmware, which
+power-cycles the panel first so the OTP waveform reaches full contrast).
+Partial refresh takes ~0.5 s for any window size.
 
 Probe script: `/tmp/ws/probe75.py` (MicroPython). Upstream C driver copied to
 `/tmp/ws/RaspberryPi_JetsonNano_c_lib_e-Paper_EPD_7in5_V2.c`; spec text at

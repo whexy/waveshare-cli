@@ -96,7 +96,7 @@ class Simulator:
 
     def start(self, mode):
         self.pending = bytes(self.framebuffer)
-        self.until = self.clock() + (.5 if mode else 4)
+        self.until = self.clock() + (.5 if mode else 4.3)
         self.bbox = None
         if mode:
             self.partials += 1

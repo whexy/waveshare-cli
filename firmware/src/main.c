@@ -9,7 +9,7 @@
 #include "protocol.h"
 #include "tusb.h"
 
-#define FW_VERSION "0.2.0"
+#define FW_VERSION "0.3.0"
 
 /* Holds a full 4 KB frame plus header/CRC several times over so the host can
  * keep streaming while a refresh occupies the main loop. Must stay a power of
@@ -146,6 +146,18 @@ static void start_full(void) {
     dirty_reset();
 }
 
+/* The device may run a partial as a full one; keep the counters describing
+ * what the panel actually did so the host's ghosting budget stays honest. */
+static void start_partial(uint16_t x0, uint16_t x1, uint16_t y0, uint16_t y1) {
+    if (epd_start_partial_refresh(x0, x1, y0, y1)) {
+        partials_since_full = 0;
+        last_full_ms = to_ms_since_boot(get_absolute_time());
+    } else {
+        partials_since_full++;
+    }
+    dirty_reset();
+}
+
 static void handle_blit(uint8_t seq, const uint8_t *payload, size_t len) {
     if (len < BLIT_HEADER_BYTES) {
         send_nak(seq, ERR_BAD_LENGTH);
@@ -278,9 +290,7 @@ static void handle_command(uint8_t type, uint8_t seq, const uint8_t *payload,
             } else {
                 image_open = false;
                 if (payload[0] == 1) {
-                    epd_start_partial_refresh(0, EPD_ROW_BYTES, 0, EPD_HEIGHT);
-                    partials_since_full++;
-                    dirty_reset();
+                    start_partial(0, EPD_ROW_BYTES, 0, EPD_HEIGHT);
                 } else {
                     start_full();
                 }
@@ -309,10 +319,7 @@ static void handle_command(uint8_t type, uint8_t seq, const uint8_t *payload,
             } else if (!dirty_valid) {
                 send_nak(seq, ERR_BAD_STATE);
             } else {
-                epd_start_partial_refresh(dirty_x0, dirty_x1, dirty_y0,
-                                          dirty_y1);
-                partials_since_full++;
-                dirty_reset();
+                start_partial(dirty_x0, dirty_x1, dirty_y0, dirty_y1);
                 send_ack(seq, NULL, 0);
             }
             break;
@@ -394,9 +401,13 @@ int main(void) {
     bi_decl(bi_1pin_with_name(10, "EPD BUSY"));
 
     board_init();
-    tusb_init();
 
+    /* Resets and powers the panel, which blocks for a few hundred ms and longer
+     * still if BUSY never releases. Done before the USB pull-up goes up so a
+     * missing or wedged panel delays enumeration instead of failing it. */
     epd_init_hardware();
+
+    tusb_init();
 
     for (;;) {
         usb_pump();

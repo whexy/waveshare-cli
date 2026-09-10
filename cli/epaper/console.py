@@ -16,6 +16,18 @@ from .term import TerminalModel
 from .render import Renderer, diff
 
 
+# Batch fast partials for responsiveness; defer disruptive full refreshes to idle.
+OUTPUT_IDLE_SECONDS = .06
+MAX_PENDING_SECONDS = .25
+CURSOR_IDLE_SECONDS = .2
+FULL_IDLE_SECONDS = 2
+FULL_UNITS = 60
+MAINTENANCE_IDLE_SECONDS = 30
+MAINTENANCE_UNITS = 10
+RESET_UNITS = 10
+FINAL_UNITS = 30
+
+
 def _write_all(fd, data):
     while data:
         count = os.write(fd, data)
@@ -51,14 +63,18 @@ class Session:
     def tick(self, final=False):
         now = time.monotonic()
         idle = now - self.last_output
-        maintenance = idle >= 30 and self.units >= 3
+        maintenance = (
+            (idle >= FULL_IDLE_SECONDS and
+             (self.units >= FULL_UNITS or
+              (self.model.reset_requested and self.units >= RESET_UNITS))) or
+            (idle >= MAINTENANCE_IDLE_SECONDS and self.units >= MAINTENANCE_UNITS))
         if not final and not maintenance:
             if self.pending_since is None:
                 return False
             if self.cursor_only:
-                if idle < .3:
+                if idle < CURSOR_IDLE_SECONDS:
                     return False
-            elif idle < .1 and now-self.pending_since < .4:
+            elif idle < OUTPUT_IDLE_SECONDS and now-self.pending_since < MAX_PENDING_SECONDS:
                 return False
         state = p.parse_status(self.device.request(*p.status()))
         if state.busy:
@@ -72,8 +88,7 @@ class Session:
             for y in range(0,480,40):
                 payloads.append(p.blit(0,y,100,40,current[y*100:(y+40)*100])[1])
             cost = 3
-        full = (self.units >= 10 or maintenance or
-                (self.model.reset_requested and self.units >= 3))
+        full = maintenance or (final and self.units >= FINAL_UNITS)
         if payloads or full:
             for payload in payloads:
                 self.device.request(p.Command.BLIT, payload)
@@ -82,7 +97,8 @@ class Session:
             self.units = 0 if full else self.units + cost
         self.initial = False
         self.pending_since = None
-        self.model.clear_reset()
+        if full:
+            self.model.clear_reset()
         return True
 
     def finish(self):

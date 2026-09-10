@@ -29,7 +29,13 @@ is rejected. Automatic discovery is only used when neither is specified.
 use shell quoting or printf for control bytes. The fixed 100x30 TERM=linux PTY
 feeds pyte on the host. Spleen ASCII glyphs, reverse attributes and a reverse
 cursor are rasterised to 1-bit pixels; unsupported characters become `?`.
-The host diffs frames, coalesces BLITs and applies the protocol's refresh budget.
+The host diffs frames and coalesces BLITs at 60 ms output idle or 250 ms pending;
+cursor-only updates debounce 200 ms. STATUS busy defers all transfers. Each
+session first sends its whole shadow with a partial refresh (no readback exists).
+Full refreshes wait for 2 s idle with at least 60 partial units, or 30 s idle
+with at least 10 units. ED 2 / reset retains a cleanup request until 2 s idle
+with at least 10 units; final flush cleans up at 30 units. Band/half/whole-screen
+partials cost 1/2/3 units. See docs/protocol.md for the refresh policy.
 
 `--fit fit` letterboxes, `fill` crops, `stretch` resizes; rotation is
 counterclockwise. Images default to threshold 128; `--dither` selects

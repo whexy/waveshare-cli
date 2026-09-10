@@ -52,10 +52,19 @@ clears it; NAK 2 if the bbox is empty. REFRESH full refreshes the whole panel
 and clears the bbox. Both ACK immediately; the refresh runs asynchronously and
 the host polls STATUS.
 
+A partial refresh takes about 0.5 s and a full one about 4.3 s. Partial cost is
+set by the waveform, not the window: a one-cell bbox costs the same as a
+whole-screen one, so a host batching pixels into fewer REFRESHes wins and
+shrinking the bbox does not. See `fast-refresh.md` for the panel sequences and
+the measurements behind those numbers.
+
 While a refresh is in flight the device answers BLIT, IMG_*, CLEAR, REFRESH and
-SLEEP with BUSY (0x82); PING, INFO and STATUS always answer. This is what
-keeps the old-plane bookkeeping correct: nothing can be written outside the
-refreshed window during a refresh.
+SLEEP with BUSY (0x82); PING, INFO and STATUS always answer. The device streams
+the framebuffer to the panel as the refresh runs, so a write accepted mid-flight
+would land on the glass as a torn frame.
+
+SLEEP puts the panel in deep sleep, which drops its configuration. The next
+refresh silently re-runs the boot sequence, costing about 0.2 s extra.
 
 ## Responses (device -> host)
 
@@ -67,7 +76,7 @@ refreshed window during a refresh.
 
 ACK payloads:
 - PING: 4 bytes "PONG"
-- INFO: ASCII, e.g. `epaper-fw 0.2.0 panel=7in5_v2 w=800 h=480 proto=2`
+- INFO: ASCII, e.g. `epaper-fw 0.3.0 panel=7in5_v2 w=800 h=480 proto=2`
 - STATUS: u8 busy (1 = refresh in flight), u16 partials_since_full,
   u32 ms_since_full (LE), u8 bbox_valid, u16 x_byte0, u16 y0, u16 x_byte1,
   u16 y1 (bbox is [x0,x1) x [y0,y1), only meaningful if bbox_valid)
@@ -87,13 +96,16 @@ BLITs for the changed spans (adjacent rows with overlapping x spans merged),
 and then exactly one REFRESH per batch.
 
 Batching policy (host):
-- flush when pty output idle >= 100 ms, or dirty pending >= 400 ms;
-- cursor-only changes debounce 300 ms;
+- flush when pty output idle >= 60 ms, or dirty pending >= 250 ms;
+- cursor-only changes debounce 200 ms;
 - never flush while STATUS says busy; keep accumulating.
 
 Ghosting budget (host): band partial = 1 unit, >= half screen = 2, whole
-screen (scroll) = 3. Use REFRESH full instead of partial when units >= 10,
-or on ED 2 / reset with units >= 3, or pty idle >= 30 s with units >= 3.
+screen (scroll) = 3. Use REFRESH full when units >= 60 and pty idle >= 2 s,
+or pty idle >= 30 s with units >= 10, or on final flush with units >= 30.
+ED 2 / reset with units >= 10 schedules a full refresh once idle >= 2 s;
+retain reset intent across partial flushes until a full refresh clears it.
+Never interrupt active typing with a full refresh.
 Scrolling is a whole-screen partial, never an automatic full refresh.
 
 Cursor is drawn by the host as a reverse-video cell.
