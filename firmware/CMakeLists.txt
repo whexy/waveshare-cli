@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.13)
 
+# clangd resolves the SDK's include paths only from this database; without it
+# every pico/ and tinyusb header reads as missing in the editor.
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 set(PICO_BOARD pico2 CACHE STRING "Board type")
 set(PICO_PLATFORM rp2350-arm-s CACHE STRING "Platform")
 

@@ -35,6 +35,10 @@ The development shell supplies the Pico SDK, ARM compiler, CMake, picotool,
 Python dependencies, and webcam-capture tools (unverified until its package
 changes land).
 
+Editor support for the firmware needs `firmware/build/compile_commands.json`,
+which the build writes. On a fresh clone run `firmware/build.sh` once before
+clangd will resolve the SDK's `pico/` and `tinyusb` headers.
+
 ## Build and flash
 
 Build the Pico 2 firmware (unverified):

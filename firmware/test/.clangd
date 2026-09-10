@@ -1,0 +1,13 @@
+# These tests build natively (see run.sh), but clangd has only the firmware's
+# ARM entries to infer from and would otherwise index them against newlib's
+# bare-metal headers instead of the host libc.
+CompileFlags:
+  Compiler: cc
+  Remove:
+    - -mcpu=*
+    - -mthumb
+    - -march=*
+    - -mcmse
+    - -mfloat-abi=*
+    - --target=*
+    - -ftls-model=*
