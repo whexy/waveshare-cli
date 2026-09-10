@@ -5,6 +5,7 @@
   ...
 }:
 let
+  inherit (pkgs) lib;
   # TinyUSB and friends live in the SDK submodules; the plain derivation omits
   # them and USB support silently disappears from the CMake build.
   picoSdk = pkgs.pico-sdk.override { withSubmodules = true; };
@@ -14,16 +15,10 @@ let
     ps.pyte
   ]);
   pre-commit-check = import ./checks/pre-commit-check.nix { inherit inputs pkgs; };
-  # serialport enumerates USB devices through IOKit on Darwin and libudev on
-  # Linux; without them the crate builds but cannot discover the panel.
-  serialportInputs =
-    if pkgs.stdenv.hostPlatform.isDarwin then
-      [ pkgs.apple-sdk ]
-    else
-      [
-        pkgs.udev
-        pkgs.systemdMinimal
-      ];
+  # serialport enumerates USB devices through libudev on Linux, a pkg-config
+  # dependency of its default features. Darwin needs nothing declared: the
+  # stdenv already supplies the SDK that IOKit enumeration links against.
+  serialportInputs = lib.optional pkgs.stdenv.hostPlatform.isLinux pkgs.udev;
   consoleFont =
     "${pkgs.nerd-fonts.terminess-ttf}/share/fonts/truetype/NerdFonts/"
     + "Terminess/TerminessNerdFontMono-Regular.ttf";
