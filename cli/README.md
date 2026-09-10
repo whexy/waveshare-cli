@@ -1,8 +1,17 @@
 # epaper host CLI
 
 Python 3.11+ on macOS/POSIX; dependencies: pyserial, Pillow and pyte.
-Install `python -m pip install ./cli` in a virtual environment, or from the
-repository root:
+
+The supported install path is the Nix package, built for `aarch64-darwin`,
+`aarch64-linux` and `x86_64-linux`:
+
+```sh
+nix run .#epaper -- --help
+nix build .#epaper          # also runs the unit and integration tests
+```
+
+Otherwise `python -m pip install ./cli` in a virtual environment. From the
+repository root, against the working tree:
 
 ```sh
 nix develop -c bash -c 'cd cli && python -m epaper --help'
@@ -24,7 +33,9 @@ epaper bootsel
 ```
 
 Global `--port PORT` or `EPAPER_PORT` selects a device. An explicitly empty port
-is rejected. Automatic discovery is only used when neither is specified.
+is rejected. Automatic discovery is only used when neither is specified; it
+matches the `epaper` USB product string, then falls back to `/dev/cu.usbmodem*`
+on macOS and `/dev/ttyACM*` elsewhere.
 `text` and each `console` invocation create a fresh screen. Strings are literal;
 use shell quoting or printf for control bytes. The fixed 100x30 TERM=linux PTY
 feeds pyte on the host. Spleen ASCII glyphs, reverse attributes and a reverse

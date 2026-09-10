@@ -1,4 +1,9 @@
-{ inputs, pkgs, ... }:
+{
+  inputs,
+  pkgs,
+  perSystem,
+  ...
+}:
 let
   # TinyUSB and friends live in the SDK submodules; the plain derivation omits
   # them and USB support silently disappears from the CMake build.
@@ -24,6 +29,8 @@ pkgs.mkShell {
     picoSdk
     python
     pkgs.mpremote # talks to the MicroPython REPL still on the board
+
+    perSystem.self.epaper # the packaged CLI, alongside the source checkout
   ];
 
   env.PICO_SDK_PATH = "${picoSdk}/lib/pico-sdk";

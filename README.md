@@ -1,6 +1,6 @@
 # Pico 2 e-paper display
 
-Firmware and a macOS CLI for a Raspberry Pi Pico 2 driving a Waveshare 7.5-inch
+Firmware and a host CLI for a Raspberry Pi Pico 2 driving a Waveshare 7.5-inch
 e-paper V2 (800×480). The device supports complete 1-bit pictures and a
 100×30 serial-console display. Host and device communicate over framed USB CDC.
 
@@ -50,7 +50,8 @@ nix flake check      # run the linters and hooks over a clean checkout
 
 The Nix files follow the [blueprint](https://github.com/numtide/blueprint)
 folder layout under `nix/`: `nix/devshell.nix` is the shell, `nix/formatter.nix`
-is `nix fmt`, and `nix/checks/` holds the flake checks.
+is `nix fmt`, `nix/packages/` holds the packages, and `nix/checks/` holds the
+flake checks.
 
 Editor support for the firmware needs `firmware/build/compile_commands.json`,
 which the build writes. On a fresh clone run `firmware/build.sh` once before
@@ -89,12 +90,26 @@ discovery does not select the Pico (consult `epaper --help`; unverified).
 ## CLI
 
 The host owns terminal emulation (pyte), ASCII bitmap rasterisation and refresh
-batching. The firmware receives only pixels. Install with `python -m pip install
-./cli` in a virtual environment, or run directly from source:
+batching. The firmware receives only pixels.
+
+The CLI is packaged for `aarch64-darwin`, `aarch64-linux` and `x86_64-linux`.
+Run it without installing, or install it into a profile:
+
+```sh
+nix run github:whexy/waveshare#epaper -- --help
+nix profile install github:whexy/waveshare#epaper
+```
+
+`nix develop` puts the same `epaper` on `PATH`. To run the working tree instead
+of the packaged build, invoke it as a module from `cli/`, where the checkout
+takes precedence:
 
 ```sh
 nix develop -c bash -c 'cd cli && python -m epaper --help'
 ```
+
+Outside Nix, `python -m pip install ./cli` in a virtual environment works as
+before.
 
 Installed command examples:
 
@@ -116,8 +131,8 @@ epaper bootsel
 Global `--port PORT` (or `EPAPER_PORT`) selects the serial device. `text` starts
 a new 100x30 screen; shell quoting controls literal escapes. For escape bytes
 use `printf` piped to `console --stdin`. `console` defaults to `$SHELL`, sets
-`TERM=linux`, and keeps the PTY fixed at 100x30. Keyboard input stays on the Mac;
-exit the child shell to finish. `--echo` mirrors output locally.
+`TERM=linux`, and keeps the PTY fixed at 100x30. Keyboard input stays on the
+host; exit the child shell to finish. `--echo` mirrors output locally.
 
 The host flushes after 100 ms idle or 400 ms pending output, with a 300 ms
 cursor-motion debounce. Byte differences become bounded BLIT rectangles. The
@@ -158,4 +173,6 @@ available. See [`docs/protocol.md`](docs/protocol.md) for the exact contract.
 - pyte is a VT emulator, not a complete modern terminal; TERM is intentionally
   linux (no padding, no alternate screen). Reverse-video attributes are supported; color and styled glyphs are not.
 - Partial refresh accumulates ghosting, and periodic full refresh visibly flashes.
-- The console remains fixed at 100x30 and does not resize with the Mac terminal.
+- The console remains fixed at 100x30 and does not resize with the host terminal.
+- Only `aarch64-linux` and `aarch64-darwin` builds are exercised here; the
+  `x86_64-linux` package evaluates but has not been built or run.

@@ -14,10 +14,14 @@ class DeviceError(RuntimeError):
 
 
 def detect_port():
-    ports = sorted(glob.glob('/dev/cu.usbmodem*'))
     for port in list_ports.comports():
         if 'epaper' in (port.product or '').lower():
+            # macOS exposes both a tty. and a cu. node; only cu. skips DCD wait.
             return port.device.replace('/dev/tty.', '/dev/cu.')
+    # The product string is absent when the descriptor is not read, so fall back
+    # to the platform's CDC-ACM naming.
+    pattern = '/dev/cu.usbmodem*' if sys.platform == 'darwin' else '/dev/ttyACM*'
+    ports = sorted(glob.glob(pattern))
     if ports:
         return ports[0]
     raise DeviceError('no USB modem found; specify --port')

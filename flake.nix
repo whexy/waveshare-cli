@@ -19,5 +19,12 @@
     inputs.blueprint {
       inherit inputs;
       prefix = "nix";
+      # nixpkgs 26.11 dropped x86_64-darwin, which the default nix-systems list
+      # still carries; enumerate the hosts the CLI is actually built for.
+      systems = [
+        "aarch64-darwin"
+        "aarch64-linux"
+        "x86_64-linux"
+      ];
     };
 }
