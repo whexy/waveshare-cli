@@ -12,7 +12,7 @@ use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{Config, Term, TermDamage, TermMode};
-use alacritty_terminal::vte::ansi::{Processor, StdSyncHandler};
+use alacritty_terminal::vte::ansi::{self, Handler, Processor, StdSyncHandler};
 
 use crate::geometry::Geometry;
 
@@ -75,41 +75,35 @@ pub struct CellView {
     pub inverse: bool,
 }
 
-/// Full-screen erase and reset schedule a full panel refresh once the output
-/// goes idle.
+/// Watches for the sequences that schedule a full panel refresh.
 ///
-/// Detected by watching the byte stream rather than by intercepting the
-/// terminal: alacritty's `Handler` has 74 methods that all default to doing
-/// nothing, so a hand-written forwarding wrapper silently discards whatever it
-/// omits. An earlier draft of this module did exactly that and swallowed
-/// `CSI ?1049h`, which sent alt-screen output to the primary grid.
-fn schedules_full_refresh(data: &[u8]) -> bool {
-    let mut index = 0;
-    while let Some(offset) = data[index..].iter().position(|&byte| byte == 0x1B) {
-        let escape = index + offset;
-        match data.get(escape + 1) {
-            // RIS
-            Some(b'c') => return true,
-            Some(b'[') => {
-                let mut cursor = escape + 2;
-                while data
-                    .get(cursor)
-                    .is_some_and(|byte| byte.is_ascii_digit() || *byte == b';')
-                {
-                    cursor += 1;
-                }
-                // ED 2 clears the screen, ED 3 also drops scrollback.
-                if data.get(cursor) == Some(&b'J')
-                    && matches!(&data[escape + 2..cursor], b"2" | b"3")
-                {
-                    return true;
-                }
-            }
-            _ => {}
+/// This is a second [`Handler`] fed the same bytes as the terminal, rather than
+/// a wrapper around it. Every `Handler` method defaults to doing nothing, which
+/// makes an observer that overrides two of them safe, but makes a *forwarding*
+/// wrapper silently lossy: an earlier draft forwarded a hand-picked subset and
+/// swallowed `CSI ?1049h`, sending alt-screen output to the primary grid.
+///
+/// Scanning the raw byte stream instead was also wrong. The parser reads ED's
+/// numeric parameter with `next_param_or(0)`, so `ESC [ 02 J` and
+/// `ESC [ 2 ; 1 J` clear the screen, and a sequence split across two pty reads
+/// still clears it. A byte scanner missed all of those.
+#[derive(Default)]
+struct ResetWatcher {
+    requested: bool,
+}
+
+impl Handler for ResetWatcher {
+    fn clear_screen(&mut self, mode: ansi::ClearMode) {
+        // Matching Python, which schedules a refresh for ED 2 only. ED 3 drops
+        // scrollback the panel never displays, so it leaves the glass alone.
+        if matches!(mode, ansi::ClearMode::All) {
+            self.requested = true;
         }
-        index = escape + 1;
     }
-    false
+
+    fn reset_state(&mut self) {
+        self.requested = true;
+    }
 }
 
 pub struct TerminalModel {
@@ -117,7 +111,10 @@ pub struct TerminalModel {
     term: Term<Replies>,
     parser: Processor<StdSyncHandler>,
     replies: Replies,
-    reset_requested: bool,
+    watcher: ResetWatcher,
+    /// Parses the same bytes as `parser` so that a sequence split across pty
+    /// reads is still recognised; it holds the state that spans those calls.
+    watch_parser: Processor<StdSyncHandler>,
 }
 
 impl TerminalModel {
@@ -132,16 +129,15 @@ impl TerminalModel {
             term: Term::new(Config::default(), &size, replies.clone()),
             parser: Processor::new(),
             replies,
-            reset_requested: false,
+            watcher: ResetWatcher::default(),
+            watch_parser: Processor::new(),
         }
     }
 
     /// Feed pty output; returns bytes the application expects back on its own
     /// input, which the caller must write to the pty.
     pub fn feed(&mut self, data: &[u8]) -> Vec<u8> {
-        if schedules_full_refresh(data) {
-            self.reset_requested = true;
-        }
+        self.watch_parser.advance(&mut self.watcher, data);
         self.parser.advance(&mut self.term, data);
         std::mem::take(&mut *self.replies.0.lock().unwrap())
     }
@@ -214,11 +210,11 @@ impl TerminalModel {
     }
 
     pub fn reset_requested(&self) -> bool {
-        self.reset_requested
+        self.watcher.requested
     }
 
     pub fn clear_reset(&mut self) {
-        self.reset_requested = false;
+        self.watcher.requested = false;
     }
 }
 
@@ -313,7 +309,14 @@ mod tests {
 
     #[test]
     fn full_screen_erase_and_reset_schedule_a_refresh() {
-        for sequence in [&b"\x1b[2J"[..], &b"\x1b[3J"[..], &b"\x1bc"[..]] {
+        // ED 2 and RIS schedule a refresh; the parser reads the first numeric
+        // parameter, so padded and multi-parameter spellings count too.
+        for sequence in [
+            &b"\x1b[2J"[..],
+            &b"\x1b[02J"[..],
+            &b"\x1b[2;1J"[..],
+            &b"\x1bc"[..],
+        ] {
             let mut model = model(100, 30);
             model.feed(sequence);
             assert!(
@@ -324,11 +327,60 @@ mod tests {
             model.clear_reset();
             assert!(!model.reset_requested());
         }
-        // A partial erase is ordinary output and must not force a full refresh.
-        for sequence in [&b"\x1b[J"[..], &b"\x1b[0J"[..], &b"\x1b[1J"[..]] {
+        // Partial erases are ordinary output. ED 3 only drops scrollback, which
+        // the panel never shows, and Python schedules a refresh for ED 2 alone.
+        for sequence in [
+            &b"\x1b[J"[..],
+            &b"\x1b[0J"[..],
+            &b"\x1b[1J"[..],
+            &b"\x1b[1;2J"[..],
+            &b"\x1b[3J"[..],
+        ] {
             let mut model = model(100, 30);
             model.feed(sequence);
-            assert!(!model.reset_requested());
+            assert!(
+                !model.reset_requested(),
+                "{:?} should not schedule a refresh",
+                String::from_utf8_lossy(sequence)
+            );
+        }
+    }
+
+    /// A pty read can end anywhere, so intent has to survive a sequence being
+    /// delivered in pieces.
+    #[test]
+    fn reset_intent_survives_a_split_across_reads() {
+        for sequence in [&b"\x1b[2J"[..], &b"\x1bc"[..], &b"\x1b[2;1J"[..]] {
+            for split in 1..sequence.len() {
+                let mut model = model(100, 30);
+                model.feed(&sequence[..split]);
+                model.feed(&sequence[split..]);
+                assert!(
+                    model.reset_requested(),
+                    "{:?} split at {split} lost its reset intent",
+                    String::from_utf8_lossy(sequence)
+                );
+            }
+        }
+    }
+
+    /// The watcher must stay in step with the terminal: whenever the screen is
+    /// actually cleared, a refresh has to be scheduled.
+    #[test]
+    fn watcher_agrees_with_the_terminal_about_clearing() {
+        for split in 1..4 {
+            let mut model = model(20, 4);
+            model.feed(b"visible text");
+            let sequence = b"\x1b[2J";
+            model.feed(&sequence[..split]);
+            model.feed(&sequence[split..]);
+            let cleared = model.row(0).iter().all(|cell| cell.text.trim().is_empty());
+            assert_eq!(
+                cleared,
+                model.reset_requested(),
+                "split at {split}: screen cleared={cleared} but reset={}",
+                model.reset_requested()
+            );
         }
     }
 

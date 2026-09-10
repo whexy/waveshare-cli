@@ -94,6 +94,72 @@ fn command_constructors_match_python() {
     }
 }
 
+/// Rejection parity: a constructor that Python refuses must not be accepted
+/// here, and vice versa. Byte-level vectors only cover the accepted cases.
+#[test]
+fn constructor_boundaries_match_python() {
+    let root = vectors();
+    let expected: HashMap<String, bool> = root["boundaries"]
+        .as_array()
+        .expect("boundaries is an array")
+        .iter()
+        .map(|case| {
+            (
+                case["name"].as_str().expect("name").to_string(),
+                case["accepted"].as_bool().expect("accepted"),
+            )
+        })
+        .collect();
+
+    let accepted: Vec<(&str, bool)> = vec![
+        ("encode_payload_4096", encode(1, 0, &[b'x'; 4096]).is_ok()),
+        ("encode_payload_4097", encode(1, 0, &[b'x'; 4097]).is_ok()),
+        ("img_data_4090", img_data(0, &[b'x'; 4090]).is_ok()),
+        ("img_data_4091", img_data(0, &[b'x'; 4091]).is_ok()),
+        ("img_data_end_exact", img_data(47990, &[b'x'; 10]).is_ok()),
+        ("img_data_end_over", img_data(47990, &[b'x'; 11]).is_ok()),
+        ("img_data_offset_48000", img_data(48000, &[]).is_ok()),
+        (
+            "blit_full_width",
+            blit(0, 0, 100, 40, &[b'z'; 4000]).is_ok(),
+        ),
+        ("blit_x_at_edge", blit(99, 0, 1, 1, b"z").is_ok()),
+        ("blit_x_past_edge", blit(100, 0, 1, 1, b"z").is_ok()),
+        ("blit_width_overruns", blit(99, 0, 2, 1, b"zz").is_ok()),
+        ("blit_y_at_edge", blit(0, 479, 1, 1, b"z").is_ok()),
+        ("blit_y_past_edge", blit(0, 480, 1, 1, b"z").is_ok()),
+        ("blit_height_overruns", blit(0, 479, 1, 2, b"zz").is_ok()),
+        ("blit_zero_width", blit(0, 0, 0, 1, b"").is_ok()),
+        ("blit_zero_height", blit(0, 0, 1, 0, b"").is_ok()),
+        ("blit_body_too_short", blit(0, 0, 2, 2, b"zzz").is_ok()),
+        ("blit_body_too_long", blit(0, 0, 2, 2, b"zzzzz").is_ok()),
+        (
+            "blit_body_at_limit",
+            blit(0, 0, 1, 4088, &[b'z'; 4088]).is_ok(),
+        ),
+        (
+            "blit_body_past_limit",
+            blit(0, 0, 1, 4089, &[b'z'; 4089]).is_ok(),
+        ),
+        ("status_15_bytes", parse_status(&[b'x'; 15]).is_ok()),
+        ("status_16_bytes", parse_status(&[b'x'; 16]).is_ok()),
+        ("status_17_bytes", parse_status(&[b'x'; 17]).is_ok()),
+    ];
+
+    assert_eq!(
+        accepted.len(),
+        expected.len(),
+        "every generated boundary must be checked"
+    );
+    for (name, got) in accepted {
+        assert_eq!(
+            got, expected[name],
+            "{name}: Rust accepted={got}, Python accepted={}",
+            expected[name]
+        );
+    }
+}
+
 #[test]
 fn crc_matches_python() {
     let expected = &vectors()["crcs"];

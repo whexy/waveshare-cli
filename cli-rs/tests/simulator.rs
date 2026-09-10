@@ -103,6 +103,19 @@ impl Simulator {
         }
         bands
     }
+
+    /// Every panel pixel, so two runs can be compared exactly rather than by
+    /// which bands happen to carry ink.
+    fn pixels(&self) -> Vec<u8> {
+        let image = ::image::open(&self.output)
+            .expect("simulator wrote a PNG")
+            .to_luma8();
+        assert_eq!((image.width(), image.height()), (800, 480));
+        image
+            .pixels()
+            .map(|pixel| u8::from(pixel.0[0] < 128))
+            .collect()
+    }
 }
 
 impl Drop for Simulator {
@@ -161,20 +174,30 @@ fn alt_screen_round_trip_restores_the_primary_screen() {
     if !available() {
         return;
     }
-    let sim = Simulator::start("altscreen").expect("simulator starts");
     // The cursor is hidden so the only ink is text; otherwise the cursor's own
     // reverse-video cell inks whichever band it rests on.
-    let script = concat!(
-        "\x1b[?25lprimary",
-        "\x1b[?1049h",
-        "\x1b[1;1Halternate screen\r\n\x1b[3;1Hmore alt text",
-        "\x1b[?1049l",
+    let round_trip = Simulator::start("altscreen").expect("simulator starts");
+    round_trip.run(
+        &["console", "--stdin"],
+        Some(
+            concat!(
+                "\x1b[?25lprimary",
+                "\x1b[?1049h",
+                "\x1b[1;1Halternate screen\r\n\x1b[3;1Hmore alt text",
+                "\x1b[?1049l",
+            )
+            .as_bytes(),
+        ),
     );
-    sim.run(&["console", "--stdin"], Some(script.as_bytes()));
+
+    // The same primary screen, never having entered the alternate one.
+    let reference = Simulator::start("altscreen-reference").expect("simulator starts");
+    reference.run(&["console", "--stdin"], Some(b"\x1b[?25lprimary"));
+
     assert_eq!(
-        sim.inked_bands(16),
-        vec![0],
-        "alternate screen content survived the switch back"
+        round_trip.pixels(),
+        reference.pixels(),
+        "the restored screen does not match a primary-only render"
     );
 }
 
@@ -226,20 +249,78 @@ fn a_curses_application_renders_on_the_panel() {
     );
 }
 
+/// A command that exits without writing anything still has to end the session:
+/// the pty reports hangup and the loop must reach EOF rather than spin.
+#[test]
+fn a_silent_command_terminates_the_session() {
+    if !available() {
+        return;
+    }
+    let sim = Simulator::start("silent").expect("simulator starts");
+    let start = std::time::Instant::now();
+    sim.run(&["console", "--", "/bin/sh", "-c", "exit 0"], None);
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(30),
+        "session did not finish promptly"
+    );
+}
+
+/// A command that closes its terminal and keeps running holds the session open
+/// until it exits, because the pty reports EOF only once the last slave
+/// descriptor is gone. The Python CLI waits the same way, so this pins the
+/// shared behaviour rather than asserting a bound the port does not have.
+#[test]
+fn a_command_that_closes_its_terminal_is_waited_for_until_it_exits() {
+    if !available() {
+        return;
+    }
+    let sim = Simulator::start("detached").expect("simulator starts");
+    let start = std::time::Instant::now();
+    sim.run(
+        &[
+            "console",
+            "--",
+            "/bin/sh",
+            "-c",
+            "printf bye; exec 0<&- 1>&- 2>&-; sleep 2",
+        ],
+        None,
+    );
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed >= std::time::Duration::from_secs(2),
+        "returned before the child exited: {elapsed:?}"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(30),
+        "waited {elapsed:?}, far longer than the child ran"
+    );
+}
+
 /// A scroll region must move only the rows inside it.
 #[test]
 fn scroll_region_leaves_rows_outside_it_untouched() {
     if !available() {
         return;
     }
-    let sim = Simulator::start("scrollregion").expect("simulator starts");
-    // Confine scrolling to rows 3..5, then push enough lines to scroll it.
-    let script = "\x1b[?25l\x1b[1;1Htop\x1b[3;5r\x1b[3;1Ha\r\nb\r\nc\r\nd";
-    sim.run(&["console", "--stdin"], Some(script.as_bytes()));
-    let bands = sim.inked_bands(16);
-    assert!(bands.contains(&0), "row outside the region was cleared");
-    assert!(
-        bands.iter().all(|band| *band < 5),
-        "ink escaped the scroll region: {bands:?}"
+    // Rows 3..5 are the scroll region. Feeding a, b, c, d scrolls it once, so
+    // the region must end up holding b, c, d with the top row untouched.
+    let scrolled = Simulator::start("scrollregion").expect("simulator starts");
+    scrolled.run(
+        &["console", "--stdin"],
+        Some(b"\x1b[?25l\x1b[1;1Htop\x1b[3;5r\x1b[3;1Ha\r\nb\r\nc\r\nd"),
+    );
+
+    // The expected end state, written directly without any scrolling.
+    let expected = Simulator::start("scrollregion-reference").expect("simulator starts");
+    expected.run(
+        &["console", "--stdin"],
+        Some(b"\x1b[?25l\x1b[1;1Htop\x1b[3;1Hb\x1b[4;1Hc\x1b[5;1Hd"),
+    );
+
+    assert_eq!(
+        scrolled.pixels(),
+        expected.pixels(),
+        "the scroll region did not shift its contents as expected"
     );
 }
