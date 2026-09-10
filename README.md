@@ -33,7 +33,24 @@ nix develop
 
 The development shell supplies the Pico SDK, ARM compiler, CMake, picotool,
 Python dependencies, and webcam-capture tools (unverified until its package
-changes land).
+changes land). Entering the shell installs a git pre-commit hook that runs
+`treefmt` plus the Nix linters; `.pre-commit-config.yaml` is generated and
+gitignored.
+
+With [direnv](https://direnv.net) the shell loads on `cd`; run `direnv allow`
+once. Per-user additions go in `.envrc.local`, which is sourced if present.
+
+Formatting is defined once in [`nix/treefmt.nix`](nix/treefmt.nix) and covers
+Nix, Python, C, and shell:
+
+```sh
+nix fmt              # format the tree
+nix flake check      # run the linters and hooks over a clean checkout
+```
+
+The Nix files follow the [blueprint](https://github.com/numtide/blueprint)
+folder layout under `nix/`: `nix/devshell.nix` is the shell, `nix/formatter.nix`
+is `nix fmt`, and `nix/checks/` holds the flake checks.
 
 Editor support for the firmware needs `firmware/build/compile_commands.json`,
 which the build writes. On a fresh clone run `firmware/build.sh` once before

@@ -1,3 +1,12 @@
-.pi/
+# direnv
+.direnv/
+
+# nix
 result
 result-*
+
+# git-hooks.nix
+/.pre-commit-config.yaml
+
+.pi/
+__pycache__/
