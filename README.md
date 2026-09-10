@@ -67,56 +67,66 @@ discovery does not select the Pico (consult `epaper --help`; unverified).
 
 ## CLI
 
-The examples below cover the command set defined by the v1 protocol. Exact
-options and executable installation are unverified until the CLI implementation
-lands.
+The host owns terminal emulation (pyte), ASCII bitmap rasterisation and refresh
+batching. The firmware receives only pixels. Install with `python -m pip install
+./cli` in a virtual environment, or run directly from source:
 
 ```sh
-epaper ping                         # Verify the framed connection
-epaper info                         # Firmware, panel, dimensions, and mode
-epaper clear white                  # Full refresh to white (or: black)
-epaper draw picture.png             # Dither/pack and display an image
-epaper mode picture                 # Select picture mode
-epaper mode console                 # Select console mode
-epaper write 'hello, e-paper'       # Write terminal bytes
-printf 'hello\n' | epaper write -  # Write bytes from standard input
-epaper console                      # Run an interactive terminal through a PTY
-epaper sleep                        # Put the panel into deep sleep
-epaper bootsel                      # Reboot the Pico into its USB bootloader
+nix develop -c bash -c 'cd cli && python -m epaper --help'
 ```
 
-Any command after `sleep` wakes the panel according to the protocol.
-`draw` sends an 800×480, packed 1-bit image; host-side scaling/dithering options
-are unverified.
-
-## Host-side simulator
-
-`tools/epdsim.py` is a reference implementation of the device side. It creates
-a pseudo-terminal, prints its slave path, accepts v1 protocol frames, and
-writes simulated display output to `/tmp/epdsim.png` after image and console
-refreshes.
+Installed command examples:
 
 ```sh
-nix-shell -p python3Packages.pyserial python3Packages.pillow \
-  --run 'python tools/epdsim.py'
+epaper ping
+epaper info
+epaper status
+epaper clear                       # white; --black selects black
+epaper draw picture.png --dither
+epaper draw --testcard
+epaper text 'hello, e-paper'
+printf 'hello\r\nworld' | epaper console --stdin
+epaper console --echo -- /bin/zsh
+epaper refresh --full
+epaper sleep
+epaper bootsel
 ```
 
-In another shell, point the CLI at the printed PTY (the CLI port flag is
-unverified). Run simulator tests with:
+Global `--port PORT` (or `EPAPER_PORT`) selects the serial device. `text` starts
+a new 100x30 screen; shell quoting controls literal escapes. For escape bytes
+use `printf` piped to `console --stdin`. `console` defaults to `$SHELL`, sets
+`TERM=linux`, and keeps the PTY fixed at 100x30. Keyboard input stays on the Mac;
+exit the child shell to finish. `--echo` mirrors output locally.
+
+The host flushes after 100 ms idle or 400 ms pending output, with a 300 ms
+cursor-motion debounce. Byte differences become bounded BLIT rectangles. The
+host polls STATUS while the panel is busy and accumulates output rather than
+redrawing. Scrolling uses partial refresh; an area-weighted ghosting budget
+periodically requests full refresh. A new console session uploads a complete
+frame to establish its shadow state. Only one client may drive the device.
+
+## Host-side simulator and tests
 
 ```sh
-nix-shell -p python3Packages.pyserial python3Packages.pillow \
-  --run 'python tools/test_epdsim.py'
+nix develop -c python tools/epdsim.py
+# Prints a PTY: supply that exact nonempty path to epaper --port.
+nix develop -c bash -c 'cd cli && python -m unittest -v'
+nix develop -c bash -c 'cd tools && python -m unittest -v'
 ```
+
+The simulator validates BLIT bounds, tracks the dirty bounding box, simulates
+500 ms partial / 4 s full BUSY periods, and writes `/tmp/epdsim.png` after
+refresh completion. `--output /tmp/other.png` selects a different output.
+Integration tests use temporary output files and a private PTY, never automatic
+serial discovery.
 
 ## Protocol
 
 Frames begin with `EB 90`, carry a command, sequence number, little-endian
-payload length, and CRC-16/CCITT-FALSE. Commands cover ping/info, mode and clear,
-chunked image transfer, console bytes, sleep, and BOOTSEL. Responses echo the
-sequence number as ACK, NAK, or BUSY. The normative definition, including
-console escape handling and refresh policy, is
-[`docs/protocol.md`](docs/protocol.md).
+payload length, and CRC-16/CCITT-FALSE. BLIT uses byte-addressed x coordinates
+and pixel-addressed y coordinates. STATUS reports refresh state; REFRESH uses
+the union of pending BLITs. Image transfer, clear, sleep and BOOTSEL remain
+available. See [`docs/protocol.md`](docs/protocol.md) for the exact contract.
 
 ## Verification with the webcam
 
@@ -144,10 +154,11 @@ can ignore SIGTERM.
 
 ## Known limitations
 
-- Physical-panel validation of the pico-sdk firmware and CLI is pending.
-- Console support is deliberately a small VT subset; unsupported CSI commands
-  are consumed rather than rendered.
-- The terminal uses printable ASCII, not Unicode.
-- E-paper refresh is inherently delayed, partial updates accumulate ghosting,
-  and the firmware must periodically perform a full refresh.
-- `CONSOLE_RESIZE` is reserved; the console remains fixed at 100×30.
+- The framebuffer protocol and host-rendered console still need physical-panel
+  verification; simulator results do not establish waveform quality.
+- Rasterisation uses Spleen ASCII 8x16 plus synthesised box-drawing glyphs;
+  other Unicode becomes `?`.
+- pyte is a VT emulator, not a complete modern terminal; TERM is intentionally
+  linux (no padding, no alternate screen). Reverse-video attributes are supported; color and styled glyphs are not.
+- Partial refresh accumulates ghosting, and periodic full refresh visibly flashes.
+- The console remains fixed at 100x30 and does not resize with the Mac terminal.

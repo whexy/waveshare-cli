@@ -22,7 +22,10 @@ void epd_poll(void);
 bool epd_is_busy(void);
 
 void epd_start_full_refresh(void);
-void epd_start_partial_refresh(uint16_t y_start, uint16_t y_end);
+/* Window x bounds are byte columns, [x_byte_start, x_byte_end); the panel can
+ * only address whole bytes horizontally. y bounds are rows, [y_start, y_end). */
+void epd_start_partial_refresh(uint16_t x_byte_start, uint16_t x_byte_end,
+                               uint16_t y_start, uint16_t y_end);
 void epd_start_clear(bool black);
 void epd_start_sleep(void);
 

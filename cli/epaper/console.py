@@ -11,7 +11,9 @@ import termios
 import time
 import tty
 
-from .protocol import console_write, set_mode
+from . import protocol as p
+from .term import TerminalModel
+from .render import Renderer, diff
 
 
 def _write_all(fd, data):
@@ -20,26 +22,125 @@ def _write_all(fd, data):
         data = data[count:]
 
 
-def pipe_stdin(device):
-    device.request(*set_mode(True))
-    while data := os.read(sys.stdin.fileno(), 4096):
-        device.request(*console_write(data))
+class Session:
+    def __init__(self, device):
+        self.device = device
+        self.model = TerminalModel()
+        self.renderer = Renderer()
+        self.sent = bytearray(48000)
+        self.units = 0
+        self.last_output = time.monotonic()
+        self.pending_since = self.last_output
+        self.cursor_only = False
+        self.initial = True
+
+    def feed(self, data):
+        before = [[self.model.cell(r,c) for c in range(100)] for r in range(30)]
+        replies = self.model.feed(data)
+        content_changed = any(before[r][c] != self.model.cell(r,c)
+                              for r in range(30) for c in range(100))
+        now = time.monotonic()
+        if self.pending_since is None:
+            self.pending_since = now
+            self.cursor_only = not content_changed
+        elif content_changed:
+            self.cursor_only = False
+        self.last_output = now
+        return replies
+
+    def tick(self, final=False):
+        now = time.monotonic()
+        idle = now - self.last_output
+        maintenance = idle >= 30 and self.units >= 3
+        if not final and not maintenance:
+            if self.pending_since is None:
+                return False
+            if self.cursor_only:
+                if idle < .3:
+                    return False
+            elif idle < .1 and now-self.pending_since < .4:
+                return False
+        state = p.parse_status(self.device.request(*p.status()))
+        if state.busy:
+            return False
+        current = self.renderer.render(self.model)
+        payloads, cost = diff(self.sent, current)
+        # No host readback exists: establish a known framebuffer once before
+        # relying on byte diffs, including clearing pixels from a prior client.
+        if self.initial:
+            payloads = []
+            for y in range(0,480,40):
+                payloads.append(p.blit(0,y,100,40,current[y*100:(y+40)*100])[1])
+            cost = 3
+        full = (self.units >= 10 or maintenance or
+                (self.model.reset_requested and self.units >= 3))
+        if payloads or full:
+            for payload in payloads:
+                self.device.request(p.Command.BLIT, payload)
+            self.device.request(*p.refresh(full))
+            self.sent[:] = current
+            self.units = 0 if full else self.units + cost
+        self.initial = False
+        self.pending_since = None
+        self.model.clear_reset()
+        return True
+
+    def finish(self):
+        deadline = time.monotonic() + 60
+        while not self.tick(final=True):
+            if time.monotonic() > deadline:
+                raise TimeoutError('final console flush timed out')
+            time.sleep(.05)
+        while p.parse_status(self.device.request(*p.status())).busy:
+            if time.monotonic() > deadline:
+                raise TimeoutError('final refresh timed out')
+            time.sleep(.05)
+
+
+def _onlcr(data):
+    # Piped bytes bypass the tty line discipline that would add CR to LF.
+    return data.replace(b'\r\n', b'\n').replace(b'\n', b'\r\n')
+
+
+def text(device, data):
+    session = Session(device)
+    session.feed(_onlcr(data))
+    session.finish()
     return 0
 
 
-def run(device, command, echo=False, cols=100, rows=30):
-    if not 1 <= cols <= 65535 or not 1 <= rows <= 65535:
-        raise ValueError('terminal dimensions must be 1..65535')
-    device.request(*set_mode(True))
+def pipe_stdin(device):
+    session = Session(device)
+    fd = sys.stdin.fileno()
+    while True:
+        ready, _, _ = select.select([fd], [], [], .02)
+        if ready:
+            data = os.read(fd, 4096)
+            if not data:
+                break
+            session.feed(_onlcr(data))
+        session.tick()
+    session.finish()
+    return 0
+
+
+def run(device, command, echo=False):
+    cols, rows = 100, 30
+    session = Session(device)
     master, slave = pty.openpty()
     child = None
     saved = None
     stdin = sys.stdin.fileno()
-    pending = bytearray()
-    last_send = time.monotonic()
+    old_winch = signal.signal(signal.SIGWINCH, signal.SIG_IGN)
+    def interrupted(signum, frame):
+        raise KeyboardInterrupt
+    old_term = signal.signal(signal.SIGTERM, interrupted)
+    old_hup = signal.signal(signal.SIGHUP, interrupted)
     try:
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', rows, cols, 0, 0))
-        env = dict(os.environ, TERM='vt100', COLUMNS=str(cols), LINES=str(rows))
+        # 'linux' has no padding delays, no alternate screen and only the
+        # CSI subset pyte implements; vt100 makes curses apps emit $<n> pads.
+        env = dict(os.environ, TERM='linux', COLUMNS=str(cols), LINES=str(rows))
         # A new session needs the slave explicitly assigned as controlling tty.
         def child_setup():
             os.setsid()
@@ -70,22 +171,20 @@ def run(device, command, echo=False, cols=100, rows=30):
                         raise
                     data = b''
                 if data:
-                    pending.extend(data)
+                    replies = session.feed(data)
+                    if replies:
+                        _write_all(master, replies)
                     if echo:
                         _write_all(sys.stdout.fileno(), data)
                 else:
                     eof = True
-            if pending and (len(pending) >= 4096 or time.monotonic() - last_send >= 0.02 or eof):
-                while pending:
-                    device.request(*console_write(pending[:4096]))
-                    del pending[:4096]
-                last_send = time.monotonic()
-            if child.poll() is not None and not ready:
-                eof = True
-        if pending:
-            device.request(*console_write(pending))
+            session.tick()
+        session.finish()
         return child.wait(timeout=2)
     finally:
+        signal.signal(signal.SIGWINCH, old_winch)
+        signal.signal(signal.SIGTERM, old_term)
+        signal.signal(signal.SIGHUP, old_hup)
         if saved is not None:
             termios.tcsetattr(stdin, termios.TCSADRAIN, saved)
         os.close(master)

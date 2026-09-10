@@ -1,4 +1,5 @@
 import glob
+import os
 import sys
 import time
 
@@ -24,7 +25,11 @@ def detect_port():
 
 class Transport:
     def __init__(self, port=None, verbose=False):
-        self.serial = serial.Serial(port or detect_port(), 115200, timeout=0.05, write_timeout=5)
+        if port is None:
+            port = os.environ.get("EPAPER_PORT")
+        if port == "":
+            raise DeviceError("empty serial port")
+        self.serial = serial.Serial(port if port is not None else detect_port(), 115200, timeout=0.05, write_timeout=5)
         self.verbose = verbose
         self.seq = 0
         self.decoder = Decoder()
@@ -68,3 +73,11 @@ class Transport:
                     break
                 raise DeviceError(f'unexpected response type 0x{frame.type:02x}')
         raise TimeoutError(f'command 0x{cmd:02x} timed out after {timeout}s')
+
+    def bootsel(self):
+        from .protocol import reset_bootsel
+        try:
+            self.request(*reset_bootsel(), timeout=2)
+        except (serial.SerialException, OSError, TimeoutError):
+            # A reset may disconnect CDC before its ACK reaches the host.
+            return

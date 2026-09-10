@@ -3,7 +3,7 @@ let
   # TinyUSB and friends live in the SDK submodules; the plain derivation omits
   # them and USB support silently disappears from the CMake build.
   picoSdk = pkgs.pico-sdk.override { withSubmodules = true; };
-  python = pkgs.python3.withPackages (ps: [ ps.pyserial ps.pillow ]);
+  python = pkgs.python3.withPackages (ps: [ ps.pyserial ps.pillow ps.pyte ]);
 in
 pkgs.mkShell {
   packages = [

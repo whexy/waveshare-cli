@@ -11,12 +11,12 @@ class ProtocolTests(unittest.TestCase):
 
     def test_roundtrip(self):
         payload = bytes(range(256)) * 16
-        frame = p.encode(p.Command.CONSOLE_WRITE, 255, payload)
+        frame = p.encode(p.Command.BLIT, 255, payload)
         decoder = p.Decoder()
         result = []
         for byte in frame:
             result += decoder.feed(bytes([byte]))
-        self.assertEqual(result, [p.Frame(0x20, 255, payload)])
+        self.assertEqual(result, [p.Frame(0x13, 255, payload)])
 
     def test_resync(self):
         valid = p.encode(1, 2)
@@ -29,6 +29,12 @@ class ProtocolTests(unittest.TestCase):
 
     def test_multiple(self):
         self.assertEqual(len(p.Decoder().feed(p.encode(1, 0) * 2)), 2)
+
+    def test_blit_status(self):
+        self.assertEqual(p.blit(2,16,1,16,b'0'*16)[1], struct.pack('<HHHH',2,16,1,16)+b'0'*16)
+        state = p.parse_status(struct.pack('<BHIBHHHH',1,2,300,1,2,16,3,32))
+        self.assertEqual((state.busy,state.y1),(1,32))
+        with self.assertRaises(ValueError): p.blit(99,0,2,1,b'xx')
 
     def test_limits(self):
         with self.assertRaises(ValueError):

@@ -47,6 +47,7 @@ typedef enum {
 static init_mode_t current_init = INIT_NONE;
 static state_t state = ST_IDLE;
 static bool job_is_partial;
+static uint16_t job_x_start, job_x_end;
 static uint16_t job_y_start, job_y_end;
 static uint16_t tx_row;
 static absolute_time_t deadline;
@@ -150,13 +151,17 @@ static void finish_init_partial(void) {
 
     cmd(0x91);
     cmd(0x90);
-    /* Window is always full width; only whole rows are ever dirty. */
-    data1(0x00);
-    data1(0x00);
-    data1((EPD_WIDTH - 1) >> 8);
-    data1((EPD_WIDTH - 1) & 0xFF);
-    data1(job_y_start >> 8);
-    data1(job_y_start & 0xFF);
+    /* HRST/HRED are pixel columns and HRED is inclusive. Reduce to the last
+     * pixel before splitting into bytes: upstream splits first and computes
+     * x_end%256-1, which underflows whenever x_end is a multiple of 256. */
+    uint16_t hrst = (uint16_t)(job_x_start * 8);
+    uint16_t hred = (uint16_t)(job_x_end * 8 - 1);
+    data1((uint8_t)(hrst >> 8));
+    data1((uint8_t)(hrst & 0xFF));
+    data1((uint8_t)(hred >> 8));
+    data1((uint8_t)(hred & 0xFF));
+    data1((uint8_t)(job_y_start >> 8));
+    data1((uint8_t)(job_y_start & 0xFF));
     data1((uint8_t)((job_y_end - 1) >> 8));
     data1((uint8_t)((job_y_end - 1) & 0xFF));
     data1(0x01);
@@ -198,6 +203,8 @@ void epd_framebuffer_fill(bool black) {
 void epd_start_full_refresh(void) {
     if (state != ST_IDLE) return;
     job_is_partial = false;
+    job_x_start = 0;
+    job_x_end = EPD_ROW_BYTES;
     job_y_start = 0;
     job_y_end = EPD_HEIGHT;
     begin_init_full();
@@ -205,11 +212,16 @@ void epd_start_full_refresh(void) {
     state = ST_POWER_BUSY;
 }
 
-void epd_start_partial_refresh(uint16_t y_start, uint16_t y_end) {
+void epd_start_partial_refresh(uint16_t x_byte_start, uint16_t x_byte_end,
+                               uint16_t y_start, uint16_t y_end) {
     if (state != ST_IDLE) return;
+    if (x_byte_end > EPD_ROW_BYTES) x_byte_end = EPD_ROW_BYTES;
     if (y_end > EPD_HEIGHT) y_end = EPD_HEIGHT;
+    if (x_byte_start >= x_byte_end) return;
     if (y_start >= y_end) return;
     job_is_partial = true;
+    job_x_start = x_byte_start;
+    job_x_end = x_byte_end;
     job_y_start = y_start;
     job_y_end = y_end;
     begin_init_partial();
@@ -249,10 +261,11 @@ static void start_data_phase(void) {
 static void tx_chunk(bool old_plane) {
     uint16_t end = tx_row + TX_ROWS_PER_POLL;
     if (end > job_y_end) end = job_y_end;
+    size_t w = (size_t)(job_x_end - job_x_start);
 
     for (uint16_t y = tx_row; y < end; y++) {
-        const uint8_t *src =
-            (old_plane ? epd_old : epd_framebuffer) + (size_t)y * EPD_ROW_BYTES;
+        const uint8_t *src = (old_plane ? epd_old : epd_framebuffer) +
+                             (size_t)y * EPD_ROW_BYTES + job_x_start;
         /* The panel planes are 1 = white. The full-refresh OTP waveform is the
          * exception: upstream EPD_7IN5_V2_Display feeds 0x13 inverted so every
          * pixel transitions, and the framebuffer is already in that (1 = black)
@@ -261,14 +274,13 @@ static void tx_chunk(bool old_plane) {
          * 1 = black to a partial window renders it inverted). */
         bool invert = old_plane || job_is_partial;
         if (old_plane && !job_is_partial)
-            src = epd_framebuffer + (size_t)y * EPD_ROW_BYTES;
+            src = epd_framebuffer + (size_t)y * EPD_ROW_BYTES + job_x_start;
         if (invert) {
             uint8_t inverted[EPD_ROW_BYTES];
-            for (size_t i = 0; i < EPD_ROW_BYTES; i++)
-                inverted[i] = (uint8_t)~src[i];
-            data(inverted, EPD_ROW_BYTES);
+            for (size_t i = 0; i < w; i++) inverted[i] = (uint8_t)~src[i];
+            data(inverted, w);
         } else {
-            data(src, EPD_ROW_BYTES);
+            data(src, w);
         }
     }
     tx_row = end;
@@ -309,7 +321,13 @@ void epd_poll(void) {
 
         case ST_REFRESH_BUSY:
             if (panel_idle()) {
-                memcpy(epd_old, epd_framebuffer, sizeof epd_old);
+                /* Only the refreshed window reached the panel, so the rest of
+                 * epd_old must keep describing what is still displayed. */
+                size_t w = (size_t)(job_x_end - job_x_start);
+                for (uint16_t y = job_y_start; y < job_y_end; y++) {
+                    size_t off = (size_t)y * EPD_ROW_BYTES + job_x_start;
+                    memcpy(epd_old + off, epd_framebuffer + off, w);
+                }
                 state = ST_IDLE;
             }
             break;

@@ -13,7 +13,6 @@ pico_sdk_init()
 add_executable(epaper_fw
     src/main.c
     src/epd7in5v2.c
-    src/console.c
     src/protocol.c
     src/usb_descriptors.c
 )

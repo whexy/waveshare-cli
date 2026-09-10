@@ -10,13 +10,13 @@ MAX_PAYLOAD = 4096
 class Command(IntEnum):
     PING = 0x01
     INFO = 0x02
-    SET_MODE = 0x03
     CLEAR = 0x04
+    STATUS = 0x05
     IMG_BEGIN = 0x10
     IMG_DATA = 0x11
     IMG_END = 0x12
-    CONSOLE_WRITE = 0x20
-    CONSOLE_RESIZE = 0x21
+    BLIT = 0x13
+    REFRESH = 0x14
     SLEEP = 0x30
     RESET_BOOTSEL = 0x31
 
@@ -76,7 +76,6 @@ class Decoder:
 
 def ping(): return Command.PING, b''
 def info(): return Command.INFO, b''
-def set_mode(console=False): return Command.SET_MODE, bytes([int(console)])
 def clear(black=False): return Command.CLEAR, bytes([int(black)])
 def img_begin(): return Command.IMG_BEGIN, struct.pack('<HHB', 800, 480, 0)
 def img_end(partial=False): return Command.IMG_END, bytes([int(partial)])
@@ -90,11 +89,32 @@ def img_data(offset, data):
     return Command.IMG_DATA, struct.pack('<I', offset) + data
 
 
-def console_write(data):
-    if len(data) > MAX_PAYLOAD:
-        raise ValueError('console chunk exceeds 4096 bytes')
-    return Command.CONSOLE_WRITE, bytes(data)
+def status(): return Command.STATUS, b''
+def refresh(full=False): return Command.REFRESH, bytes([0 if full else 1])
 
 
-def console_resize():
-    raise NotImplementedError('CONSOLE_RESIZE is reserved in protocol v1')
+def blit(x_byte, y, w_bytes, h, bits):
+    if not (0 <= x_byte < 100 and 0 <= y < 480 and
+            0 < w_bytes <= 100 - x_byte and 0 < h <= 480 - y):
+        raise ValueError('BLIT out of bounds')
+    if len(bits) != w_bytes * h or len(bits) > 4088:
+        raise ValueError('BLIT length mismatch')
+    return Command.BLIT, struct.pack('<HHHH', x_byte, y, w_bytes, h) + bytes(bits)
+
+
+@dataclass(frozen=True)
+class Status:
+    busy: int
+    partials_since_full: int
+    ms_since_full: int
+    bbox_valid: int
+    x_byte0: int
+    y0: int
+    x_byte1: int
+    y1: int
+
+
+def parse_status(payload):
+    if len(payload) != 16:
+        raise ValueError('STATUS must contain 16 bytes')
+    return Status(*struct.unpack('<BHIBHHHH', payload))

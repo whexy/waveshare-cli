@@ -10,17 +10,19 @@
 #define PROTO_HEADER_BYTES  6
 #define PROTO_MAX_PAYLOAD   4096
 
-#define CMD_PING           0x01
-#define CMD_INFO           0x02
-#define CMD_SET_MODE       0x03
-#define CMD_CLEAR          0x04
-#define CMD_IMG_BEGIN      0x10
-#define CMD_IMG_DATA       0x11
-#define CMD_IMG_END        0x12
-#define CMD_CONSOLE_WRITE  0x20
-#define CMD_CONSOLE_RESIZE 0x21
-#define CMD_SLEEP          0x30
-#define CMD_RESET_BOOTSEL  0x31
+#define CMD_PING          0x01
+#define CMD_INFO          0x02
+#define CMD_CLEAR         0x04
+#define CMD_STATUS        0x05
+#define CMD_IMG_BEGIN     0x10
+#define CMD_IMG_DATA      0x11
+#define CMD_IMG_END       0x12
+#define CMD_BLIT          0x13
+#define CMD_REFRESH       0x14
+#define CMD_SLEEP         0x30
+#define CMD_RESET_BOOTSEL 0x31
+
+#define PROTO_STATUS_BYTES 16
 
 #define RSP_ACK  0x80
 #define RSP_NAK  0x81

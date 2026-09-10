@@ -1,53 +1,41 @@
 # epaper host CLI
 
-Python 3.11+ on macOS/POSIX. Install with `python -m pip install ./cli`
-(prefer a virtual environment). Alternatively, from `cli/`, use:
+Python 3.11+ on macOS/POSIX; dependencies: pyserial, Pillow and pyte.
+Install `python -m pip install ./cli` in a virtual environment, or from the
+repository root:
 
 ```sh
-nix shell --impure --expr 'let p = import <nixpkgs> {}; in p.python3.withPackages (ps: [ ps.pyserial ps.pillow ])'
-python -m unittest -v
-python -m epaper --help
+nix develop -c bash -c 'cd cli && python -m epaper --help'
+nix develop -c bash -c 'cd cli && python -m unittest -v'
 ```
-
-Examples after installation:
 
 ```sh
 epaper ping
-epaper info
+epaper status
 epaper draw photo.png --fit fit --dither
 epaper draw --testcard
-epaper draw photo.png --partial
-epaper mode console
-epaper write 'hello\nworld\n'
-printf 'hello\n' | epaper console --stdin
+epaper text 'hello'
+printf 'hello\r\nworld' | epaper console --stdin
 epaper console --echo -- /bin/zsh
+epaper refresh --full
 epaper clear
 epaper sleep
+epaper bootsel
 ```
 
-Global `--port` and `--verbose` precede the subcommand. Auto-detection prefers
-USB products containing `epaper`, then the first `/dev/cu.usbmodem*`.
-`--fit fit` letterboxes on white, `fill` crops, and `stretch` distorts to fit.
-Rotation is counterclockwise. Default monochrome conversion is threshold 128;
-`--dither` selects Floyd–Steinberg instead. Transparent pixels composite on white.
+Global `--port PORT` or `EPAPER_PORT` selects a device. An explicitly empty port
+is rejected. Automatic discovery is only used when neither is specified.
+`text` and each `console` invocation create a fresh screen. Strings are literal;
+use shell quoting or printf for control bytes. The fixed 100x30 TERM=linux PTY
+feeds pyte on the host. Spleen ASCII glyphs, reverse attributes and a reverse
+cursor are rasterised to 1-bit pixels; unsupported characters become `?`.
+The host diffs frames, coalesces BLITs and applies the protocol's refresh budget.
 
-`console` defaults to `$SHELL`, with TERM=vt100 and a 100x30 PTY. The firmware
-has a fixed 100x30 grid: `--cols` and `--rows` affect the child PTY only, not
-the device (CONSOLE_RESIZE is reserved). Rendering is ASCII with the limited
-ANSI subset in the protocol; Unicode/full-screen applications may not render
-faithfully. Keyboard input stays on the Mac. Ctrl-C is sent to the child while
-the local terminal is raw; exit the child shell to finish. Local echo is opt-in.
-USB ACK/backpressure can delay input processing during panel refreshes.
+`--fit fit` letterboxes, `fill` crops, `stretch` resizes; rotation is
+counterclockwise. Images default to threshold 128; `--dither` selects
+Floyd–Steinberg. Transparent pixels composite on white.
 
-For a hardware-free manual smoke test, from `cli/` in the environment above:
-
-```sh
-python -m tests.fake_device
-# Prints e.g. /dev/ttys006; leave running, then in another terminal:
-python -m epaper --port /dev/ttys006 ping
-# PONG
-```
-
-The automated integration test creates its own fake PTY and checks ping, info,
-testcard upload, stdin streaming, and a shell PTY. The fake ACKs every command;
-it does not simulate actual rendering or firmware validation.
+See the repository README for simulator use and known limitations. Integration
+tests launch tools/epdsim.py with a private PTY and temporary PNG output.
+Regenerate the embedded font with `cli/tools/gen_font.py INPUT.psfu OUTPUT.py`
+using Spleen's `share/consolefonts/spleen-8x16.psfu` from nixpkgs#spleen.
