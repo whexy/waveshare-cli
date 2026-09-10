@@ -45,7 +45,11 @@ pkgs.mkShell {
     python
     pkgs.mpremote # talks to the MicroPython REPL still on the board
 
-    perSystem.self.epaper # the packaged CLI, alongside the source checkout
+    perSystem.self.epaper # the packaged Python CLI, alongside the source checkout
+    # The Rust port, reachable as epaper-rs. It also ships bin/epaper, so it
+    # comes after the Python package, which keeps the unsuffixed name until the
+    # port is validated on hardware.
+    perSystem.self.epaper-rs
   ]
   ++ serialportInputs;
 

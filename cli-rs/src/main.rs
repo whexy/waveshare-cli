@@ -1,10 +1,22 @@
 use anyhow::{bail, Result};
 use clap::{ArgAction, ArgGroup, Args, Parser, Subcommand};
 
-use epaper::geometry::{DEFAULT_COLUMNS, DEFAULT_ROWS};
+use epaper::console;
+use epaper::font::{find_font, Font};
+use epaper::geometry::{parse_size, Geometry, DEFAULT_COLUMNS, DEFAULT_ROWS};
 use epaper::image::{self, Fit, PackOptions};
 use epaper::protocol as p;
 use epaper::transport::Transport;
+
+fn console_setup(options: &ConsoleOptions) -> Result<(Geometry, Font)> {
+    let grid = parse_size(&options.size)?;
+    let path = match &options.font {
+        Some(path) => std::path::PathBuf::from(path),
+        None => find_font()?,
+    };
+    let font = Font::load(&path, grid.cell_width, grid.cell_height)?;
+    Ok((grid, font))
+}
 
 #[derive(Parser)]
 #[command(
@@ -165,14 +177,38 @@ fn run(cli: &Cli) -> Result<u8> {
             let (command, payload) = p::img_end(*partial);
             device.request(command, &payload)?;
         }
-        Action::Text { .. } => {
-            bail!("`text` lands with the terminal model in the next change")
+        Action::Text {
+            text,
+            console: options,
+        } => {
+            let (grid, font) = console_setup(options)?;
+            return console::text(&mut device, text.as_bytes(), grid, font);
         }
-        Action::Console { stdin, command, .. } => {
-            if *stdin && !command.is_empty() {
-                bail!("--stdin cannot be combined with a command");
+        Action::Console {
+            stdin,
+            echo,
+            console: options,
+            command,
+        } => {
+            let command: Vec<String> = match command.split_first() {
+                // argparse's REMAINDER keeps the separator; clap does not, but
+                // an explicit `--` still arrives when it follows another flag.
+                Some((first, rest)) if first == "--" => rest.to_vec(),
+                _ => command.clone(),
+            };
+            let (grid, font) = console_setup(options)?;
+            if *stdin {
+                if !command.is_empty() {
+                    bail!("--stdin cannot be combined with a command");
+                }
+                return console::pipe_stdin(&mut device, grid, font);
             }
-            bail!("`console` lands with the terminal model in the next change")
+            let command = if command.is_empty() {
+                vec![std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())]
+            } else {
+                command
+            };
+            return console::run(&mut device, &command, *echo, grid, font);
         }
     }
     Ok(0)
