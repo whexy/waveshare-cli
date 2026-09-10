@@ -6,7 +6,7 @@ import time
 import serial
 from serial.tools import list_ports
 
-from .protocol import ACK, NAK, BUSY, ERROR_NAMES, Decoder, encode
+from .protocol import ACK, BUSY, ERROR_NAMES, NAK, Decoder, encode
 
 
 class DeviceError(RuntimeError):
@@ -26,10 +26,15 @@ def detect_port():
 class Transport:
     def __init__(self, port=None, verbose=False):
         if port is None:
-            port = os.environ.get("EPAPER_PORT")
-        if port == "":
-            raise DeviceError("empty serial port")
-        self.serial = serial.Serial(port if port is not None else detect_port(), 115200, timeout=0.05, write_timeout=5)
+            port = os.environ.get('EPAPER_PORT')
+        if port == '':
+            raise DeviceError('empty serial port')
+        self.serial = serial.Serial(
+            port if port is not None else detect_port(),
+            115200,
+            timeout=0.05,
+            write_timeout=5,
+        )
         self.verbose = verbose
         self.seq = 0
         self.decoder = Decoder()
@@ -65,7 +70,9 @@ class Transport:
                 if frame.type == NAK:
                     code = frame.payload[0] if frame.payload else 0
                     message = frame.payload[1:].decode('ascii', errors='replace')
-                    raise DeviceError(f'{ERROR_NAMES.get(code, "unknown error")} ({code}): {message}')
+                    raise DeviceError(
+                        f'{ERROR_NAMES.get(code, "unknown error")} ({code}): {message}'
+                    )
                 if frame.type == BUSY:
                     time.sleep(min(backoff, max(0, deadline - time.monotonic())))
                     backoff = min(backoff * 2, 1)
@@ -76,6 +83,7 @@ class Transport:
 
     def bootsel(self):
         from .protocol import reset_bootsel
+
         try:
             self.request(*reset_bootsel(), timeout=2)
         except (serial.SerialException, OSError, TimeoutError):

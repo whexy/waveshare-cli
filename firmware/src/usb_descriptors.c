@@ -75,8 +75,10 @@ uint16_t const *tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
         const char *str = string_desc_arr[index];
         chr_count = strlen(str);
         size_t max_count = sizeof(desc_str) / sizeof(desc_str[0]) - 1;
-        if (chr_count > max_count) chr_count = max_count;
-        for (size_t i = 0; i < chr_count; i++) desc_str[1 + i] = str[i];
+        if (chr_count > max_count)
+            chr_count = max_count;
+        for (size_t i = 0; i < chr_count; i++)
+            desc_str[1 + i] = str[i];
     }
 
     desc_str[0] = (uint16_t)((TUSB_DESC_STRING << 8) | (2 * chr_count + 2));

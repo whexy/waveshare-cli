@@ -13,7 +13,8 @@
 
 /* Holds a full 4 KB frame plus header/CRC several times over so the host can
  * keep streaming while a refresh occupies the main loop. Must stay a power of
- * two: ring_used() relies on unsigned wraparound being exact modulo the size. */
+ * two: ring_used() relies on unsigned wraparound being exact modulo the size.
+ */
 #define RX_RING_BYTES 32768
 _Static_assert((RX_RING_BYTES & (RX_RING_BYTES - 1)) == 0,
                "RX_RING_BYTES must be a power of two");
@@ -42,7 +43,8 @@ static size_t ring_used(void) {
 static void ring_push(const uint8_t *data, size_t len) {
     for (size_t i = 0; i < len; i++) {
         size_t next = (ring_head + 1) % RX_RING_BYTES;
-        if (next == ring_tail) return; /* full: drop, host retries on timeout */
+        if (next == ring_tail)
+            return; /* full: drop, host retries on timeout */
         rx_ring[ring_head] = data[i];
         ring_head = next;
     }
@@ -58,11 +60,13 @@ static void ring_drop(size_t count) {
 
 static void usb_pump(void) {
     tud_task();
-    if (!tud_cdc_available()) return;
+    if (!tud_cdc_available())
+        return;
     uint8_t buf[64];
     while (tud_cdc_available()) {
         uint32_t n = tud_cdc_read(buf, sizeof buf);
-        if (!n) break;
+        if (!n)
+            break;
         ring_push(buf, n);
     }
 }
@@ -70,11 +74,13 @@ static void usb_pump(void) {
 static void cdc_write_all(const uint8_t *data, size_t len) {
     size_t sent = 0;
     while (sent < len) {
-        if (!tud_cdc_connected()) return;
+        if (!tud_cdc_connected())
+            return;
         uint32_t n = tud_cdc_write(data + sent, (uint32_t)(len - sent));
         sent += n;
         tud_cdc_write_flush();
-        if (!n) usb_pump();
+        if (!n)
+            usb_pump();
     }
     tud_cdc_write_flush();
 }
@@ -103,7 +109,8 @@ static void send_frame(uint8_t type, uint8_t seq, const uint8_t *payload,
     }
 
     cdc_write_all(hdr, sizeof hdr);
-    if (len) cdc_write_all(payload, len);
+    if (len)
+        cdc_write_all(payload, len);
     uint8_t tail[2] = {(uint8_t)(crc & 0xFF), (uint8_t)(crc >> 8)};
     cdc_write_all(tail, 2);
 }
@@ -133,10 +140,14 @@ static void dirty_add(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
         dirty_valid = true;
         return;
     }
-    if (x0 < dirty_x0) dirty_x0 = x0;
-    if (y0 < dirty_y0) dirty_y0 = y0;
-    if (x1 > dirty_x1) dirty_x1 = x1;
-    if (y1 > dirty_y1) dirty_y1 = y1;
+    if (x0 < dirty_x0)
+        dirty_x0 = x0;
+    if (y0 < dirty_y0)
+        dirty_y0 = y0;
+    if (x1 > dirty_x1)
+        dirty_x1 = x1;
+    if (y1 > dirty_y1)
+        dirty_y1 = y1;
 }
 
 static void start_full(void) {
@@ -211,141 +222,140 @@ static void handle_status(uint8_t seq) {
 static void handle_command(uint8_t type, uint8_t seq, const uint8_t *payload,
                            size_t len) {
     switch (type) {
-        case CMD_PING:
-            send_ack(seq, (const uint8_t *)"PONG", 4);
-            break;
+    case CMD_PING:
+        send_ack(seq, (const uint8_t *)"PONG", 4);
+        break;
 
-        case CMD_INFO: {
-            char info[96];
-            int n = snprintf(info, sizeof info,
-                             "epaper-fw " FW_VERSION
-                             " panel=7in5_v2 w=%d h=%d proto=2",
-                             EPD_WIDTH, EPD_HEIGHT);
-            send_ack(seq, (const uint8_t *)info, (size_t)n);
-            break;
-        }
+    case CMD_INFO: {
+        char info[96];
+        int n =
+            snprintf(info, sizeof info,
+                     "epaper-fw " FW_VERSION " panel=7in5_v2 w=%d h=%d proto=2",
+                     EPD_WIDTH, EPD_HEIGHT);
+        send_ack(seq, (const uint8_t *)info, (size_t)n);
+        break;
+    }
 
-        case CMD_STATUS:
-            handle_status(seq);
-            break;
+    case CMD_STATUS:
+        handle_status(seq);
+        break;
 
-        case CMD_CLEAR:
-            if (len != 1) {
-                send_nak(seq, ERR_BAD_LENGTH);
-            } else if (epd_is_busy()) {
-                send_busy(seq);
-            } else {
-                epd_framebuffer_fill(payload[0] != 0);
-                start_full();
-                send_ack(seq, NULL, 0);
-            }
-            break;
-
-        case CMD_IMG_BEGIN:
-            if (len != 5) {
-                send_nak(seq, ERR_BAD_LENGTH);
-            } else if (epd_is_busy()) {
-                send_busy(seq);
-            } else {
-                uint16_t w = rd_u16(payload);
-                uint16_t h = rd_u16(payload + 2);
-                if (w != EPD_WIDTH || h != EPD_HEIGHT || payload[4] != 0) {
-                    send_nak(seq, ERR_RANGE);
-                } else {
-                    image_open = true;
-                    send_ack(seq, NULL, 0);
-                }
-            }
-            break;
-
-        case CMD_IMG_DATA:
-            if (len < 4) {
-                send_nak(seq, ERR_BAD_LENGTH);
-            } else if (!image_open) {
-                send_nak(seq, ERR_BAD_STATE);
-            } else if (epd_is_busy()) {
-                send_busy(seq);
-            } else {
-                uint32_t off = (uint32_t)payload[0] |
-                               ((uint32_t)payload[1] << 8) |
-                               ((uint32_t)payload[2] << 16) |
-                               ((uint32_t)payload[3] << 24);
-                size_t n = len - 4;
-                if (off > EPD_FRAME_BYTES || n > EPD_FRAME_BYTES - off) {
-                    send_nak(seq, ERR_RANGE);
-                } else {
-                    memcpy(epd_framebuffer + off, payload + 4, n);
-                    send_ack(seq, NULL, 0);
-                }
-            }
-            break;
-
-        case CMD_IMG_END:
-            if (len != 1) {
-                send_nak(seq, ERR_BAD_LENGTH);
-            } else if (!image_open) {
-                send_nak(seq, ERR_BAD_STATE);
-            } else if (epd_is_busy()) {
-                send_busy(seq);
-            } else {
-                image_open = false;
-                if (payload[0] == 1) {
-                    start_partial(0, EPD_ROW_BYTES, 0, EPD_HEIGHT);
-                } else {
-                    start_full();
-                }
-                send_ack(seq, NULL, 0);
-            }
-            break;
-
-        case CMD_BLIT:
-            if (epd_is_busy()) {
-                send_busy(seq);
-            } else {
-                handle_blit(seq, payload, len);
-            }
-            break;
-
-        case CMD_REFRESH:
-            if (len != 1) {
-                send_nak(seq, ERR_BAD_LENGTH);
-            } else if (epd_is_busy()) {
-                send_busy(seq);
-            } else if (payload[0] == 0) {
-                start_full();
-                send_ack(seq, NULL, 0);
-            } else if (payload[0] != 1) {
-                send_nak(seq, ERR_RANGE);
-            } else if (!dirty_valid) {
-                send_nak(seq, ERR_BAD_STATE);
-            } else {
-                start_partial(dirty_x0, dirty_x1, dirty_y0, dirty_y1);
-                send_ack(seq, NULL, 0);
-            }
-            break;
-
-        case CMD_SLEEP:
-            if (epd_is_busy()) {
-                send_busy(seq);
-            } else {
-                epd_start_sleep();
-                send_ack(seq, NULL, 0);
-            }
-            break;
-
-        case CMD_RESET_BOOTSEL:
+    case CMD_CLEAR:
+        if (len != 1) {
+            send_nak(seq, ERR_BAD_LENGTH);
+        } else if (epd_is_busy()) {
+            send_busy(seq);
+        } else {
+            epd_framebuffer_fill(payload[0] != 0);
+            start_full();
             send_ack(seq, NULL, 0);
-            /* Let the ACK reach the host before the USB stack disappears. */
-            for (int i = 0; i < 50; i++) {
-                usb_pump();
-                sleep_ms(2);
-            }
-            reset_usb_boot(0, 0);
-            break;
+        }
+        break;
 
-        default:
-            send_nak(seq, ERR_UNKNOWN);
-            break;
+    case CMD_IMG_BEGIN:
+        if (len != 5) {
+            send_nak(seq, ERR_BAD_LENGTH);
+        } else if (epd_is_busy()) {
+            send_busy(seq);
+        } else {
+            uint16_t w = rd_u16(payload);
+            uint16_t h = rd_u16(payload + 2);
+            if (w != EPD_WIDTH || h != EPD_HEIGHT || payload[4] != 0) {
+                send_nak(seq, ERR_RANGE);
+            } else {
+                image_open = true;
+                send_ack(seq, NULL, 0);
+            }
+        }
+        break;
+
+    case CMD_IMG_DATA:
+        if (len < 4) {
+            send_nak(seq, ERR_BAD_LENGTH);
+        } else if (!image_open) {
+            send_nak(seq, ERR_BAD_STATE);
+        } else if (epd_is_busy()) {
+            send_busy(seq);
+        } else {
+            uint32_t off = (uint32_t)payload[0] | ((uint32_t)payload[1] << 8) |
+                           ((uint32_t)payload[2] << 16) |
+                           ((uint32_t)payload[3] << 24);
+            size_t n = len - 4;
+            if (off > EPD_FRAME_BYTES || n > EPD_FRAME_BYTES - off) {
+                send_nak(seq, ERR_RANGE);
+            } else {
+                memcpy(epd_framebuffer + off, payload + 4, n);
+                send_ack(seq, NULL, 0);
+            }
+        }
+        break;
+
+    case CMD_IMG_END:
+        if (len != 1) {
+            send_nak(seq, ERR_BAD_LENGTH);
+        } else if (!image_open) {
+            send_nak(seq, ERR_BAD_STATE);
+        } else if (epd_is_busy()) {
+            send_busy(seq);
+        } else {
+            image_open = false;
+            if (payload[0] == 1) {
+                start_partial(0, EPD_ROW_BYTES, 0, EPD_HEIGHT);
+            } else {
+                start_full();
+            }
+            send_ack(seq, NULL, 0);
+        }
+        break;
+
+    case CMD_BLIT:
+        if (epd_is_busy()) {
+            send_busy(seq);
+        } else {
+            handle_blit(seq, payload, len);
+        }
+        break;
+
+    case CMD_REFRESH:
+        if (len != 1) {
+            send_nak(seq, ERR_BAD_LENGTH);
+        } else if (epd_is_busy()) {
+            send_busy(seq);
+        } else if (payload[0] == 0) {
+            start_full();
+            send_ack(seq, NULL, 0);
+        } else if (payload[0] != 1) {
+            send_nak(seq, ERR_RANGE);
+        } else if (!dirty_valid) {
+            send_nak(seq, ERR_BAD_STATE);
+        } else {
+            start_partial(dirty_x0, dirty_x1, dirty_y0, dirty_y1);
+            send_ack(seq, NULL, 0);
+        }
+        break;
+
+    case CMD_SLEEP:
+        if (epd_is_busy()) {
+            send_busy(seq);
+        } else {
+            epd_start_sleep();
+            send_ack(seq, NULL, 0);
+        }
+        break;
+
+    case CMD_RESET_BOOTSEL:
+        send_ack(seq, NULL, 0);
+        /* Let the ACK reach the host before the USB stack disappears. */
+        for (int i = 0; i < 50; i++) {
+            usb_pump();
+            sleep_ms(2);
+        }
+        reset_usb_boot(0, 0);
+        break;
+
+    default:
+        send_nak(seq, ERR_UNKNOWN);
+        break;
     }
 }
 
@@ -353,13 +363,16 @@ static void handle_command(uint8_t type, uint8_t seq, const uint8_t *payload,
  * framing or CRC error. */
 static void parse_ring(void) {
     for (;;) {
-        while (ring_used() >= 1 && ring_peek(0) != PROTO_MAGIC0) ring_drop(1);
-        if (ring_used() < 2) return;
+        while (ring_used() >= 1 && ring_peek(0) != PROTO_MAGIC0)
+            ring_drop(1);
+        if (ring_used() < 2)
+            return;
         if (ring_peek(1) != PROTO_MAGIC1) {
             ring_drop(1);
             continue;
         }
-        if (ring_used() < PROTO_HEADER_BYTES) return;
+        if (ring_used() < PROTO_HEADER_BYTES)
+            return;
 
         uint8_t type = ring_peek(2);
         uint8_t seq = ring_peek(3);
@@ -370,9 +383,11 @@ static void parse_ring(void) {
             continue;
         }
         size_t total = PROTO_HEADER_BYTES + len + 2;
-        if (ring_used() < total) return;
+        if (ring_used() < total)
+            return;
 
-        for (size_t i = 0; i < total; i++) frame[i] = ring_peek(i);
+        for (size_t i = 0; i < total; i++)
+            frame[i] = ring_peek(i);
 
         uint16_t want = (uint16_t)(frame[PROTO_HEADER_BYTES + len] |
                                    (frame[PROTO_HEADER_BYTES + len + 1] << 8));

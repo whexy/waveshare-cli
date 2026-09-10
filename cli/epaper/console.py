@@ -12,14 +12,13 @@ import time
 import tty
 
 from . import protocol as p
-from .term import TerminalModel
 from .render import Renderer, diff
-
+from .term import TerminalModel
 
 # Batch fast partials for responsiveness; defer disruptive full refreshes to idle.
-OUTPUT_IDLE_SECONDS = .06
-MAX_PENDING_SECONDS = .25
-CURSOR_IDLE_SECONDS = .2
+OUTPUT_IDLE_SECONDS = 0.06
+MAX_PENDING_SECONDS = 0.25
+CURSOR_IDLE_SECONDS = 0.2
 FULL_IDLE_SECONDS = 2
 FULL_UNITS = 60
 MAINTENANCE_IDLE_SECONDS = 30
@@ -47,10 +46,11 @@ class Session:
         self.initial = True
 
     def feed(self, data):
-        before = [[self.model.cell(r,c) for c in range(100)] for r in range(30)]
+        before = [[self.model.cell(r, c) for c in range(100)] for r in range(30)]
         replies = self.model.feed(data)
-        content_changed = any(before[r][c] != self.model.cell(r,c)
-                              for r in range(30) for c in range(100))
+        content_changed = any(
+            before[r][c] != self.model.cell(r, c) for r in range(30) for c in range(100)
+        )
         now = time.monotonic()
         if self.pending_since is None:
             self.pending_since = now
@@ -64,17 +64,22 @@ class Session:
         now = time.monotonic()
         idle = now - self.last_output
         maintenance = (
-            (idle >= FULL_IDLE_SECONDS and
-             (self.units >= FULL_UNITS or
-              (self.model.reset_requested and self.units >= RESET_UNITS))) or
-            (idle >= MAINTENANCE_IDLE_SECONDS and self.units >= MAINTENANCE_UNITS))
+            idle >= FULL_IDLE_SECONDS
+            and (
+                self.units >= FULL_UNITS
+                or (self.model.reset_requested and self.units >= RESET_UNITS)
+            )
+        ) or (idle >= MAINTENANCE_IDLE_SECONDS and self.units >= MAINTENANCE_UNITS)
         if not final and not maintenance:
             if self.pending_since is None:
                 return False
             if self.cursor_only:
                 if idle < CURSOR_IDLE_SECONDS:
                     return False
-            elif idle < OUTPUT_IDLE_SECONDS and now-self.pending_since < MAX_PENDING_SECONDS:
+            elif (
+                idle < OUTPUT_IDLE_SECONDS
+                and now - self.pending_since < MAX_PENDING_SECONDS
+            ):
                 return False
         state = p.parse_status(self.device.request(*p.status()))
         if state.busy:
@@ -85,8 +90,10 @@ class Session:
         # relying on byte diffs, including clearing pixels from a prior client.
         if self.initial:
             payloads = []
-            for y in range(0,480,40):
-                payloads.append(p.blit(0,y,100,40,current[y*100:(y+40)*100])[1])
+            for y in range(0, 480, 40):
+                payloads.append(
+                    p.blit(0, y, 100, 40, current[y * 100 : (y + 40) * 100])[1]
+                )
             cost = 3
         full = maintenance or (final and self.units >= FINAL_UNITS)
         if payloads or full:
@@ -106,11 +113,11 @@ class Session:
         while not self.tick(final=True):
             if time.monotonic() > deadline:
                 raise TimeoutError('final console flush timed out')
-            time.sleep(.05)
+            time.sleep(0.05)
         while p.parse_status(self.device.request(*p.status())).busy:
             if time.monotonic() > deadline:
                 raise TimeoutError('final refresh timed out')
-            time.sleep(.05)
+            time.sleep(0.05)
 
 
 def _onlcr(data):
@@ -129,7 +136,7 @@ def pipe_stdin(device):
     session = Session(device)
     fd = sys.stdin.fileno()
     while True:
-        ready, _, _ = select.select([fd], [], [], .02)
+        ready, _, _ = select.select([fd], [], [], 0.02)
         if ready:
             data = os.read(fd, 4096)
             if not data:
@@ -148,8 +155,10 @@ def run(device, command, echo=False):
     saved = None
     stdin = sys.stdin.fileno()
     old_winch = signal.signal(signal.SIGWINCH, signal.SIG_IGN)
+
     def interrupted(signum, frame):
         raise KeyboardInterrupt
+
     old_term = signal.signal(signal.SIGTERM, interrupted)
     old_hup = signal.signal(signal.SIGHUP, interrupted)
     try:
@@ -157,12 +166,20 @@ def run(device, command, echo=False):
         # 'linux' has no padding delays, no alternate screen and only the
         # CSI subset pyte implements; vt100 makes curses apps emit $<n> pads.
         env = dict(os.environ, TERM='linux', COLUMNS=str(cols), LINES=str(rows))
+
         # A new session needs the slave explicitly assigned as controlling tty.
         def child_setup():
             os.setsid()
             fcntl.ioctl(0, termios.TIOCSCTTY, 0)
-        child = subprocess.Popen(command, stdin=slave, stdout=slave, stderr=slave,
-                                 env=env, preexec_fn=child_setup)
+
+        child = subprocess.Popen(
+            command,
+            stdin=slave,
+            stdout=slave,
+            stderr=slave,
+            env=env,
+            preexec_fn=child_setup,
+        )
         os.close(slave)
         slave = -1
         if os.isatty(stdin):

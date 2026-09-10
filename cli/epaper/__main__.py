@@ -4,7 +4,8 @@ import sys
 
 import serial
 
-from . import console, image, protocol as p
+from . import console, image
+from . import protocol as p
 from .transport import DeviceError, Transport
 
 
@@ -44,8 +45,13 @@ def main(argv=None):
     try:
         with Transport(args.port, args.verbose) as device:
             if args.action in ('ping', 'info', 'sleep', 'bootsel', 'status'):
-                constructor = {'ping': p.ping, 'info': p.info, 'sleep': p.sleep,
-                               'bootsel': p.reset_bootsel, 'status': p.status}[args.action]
+                constructor = {
+                    'ping': p.ping,
+                    'info': p.info,
+                    'sleep': p.sleep,
+                    'bootsel': p.reset_bootsel,
+                    'status': p.status,
+                }[args.action]
                 if args.action == 'bootsel':
                     device.bootsel()
                     return 0
@@ -62,14 +68,28 @@ def main(argv=None):
             elif args.action == 'text':
                 return console.text(device, args.text.encode())
             elif args.action == 'draw':
-                options = dict(fit=args.fit, rotate=args.rotate, dither=args.dither,
-                               threshold=args.threshold, invert=args.invert)
-                data = image.pack(image.testcard(), **options) if args.testcard else image.load(args.image, **options)
+                options = dict(
+                    fit=args.fit,
+                    rotate=args.rotate,
+                    dither=args.dither,
+                    threshold=args.threshold,
+                    invert=args.invert,
+                )
+                data = (
+                    image.pack(image.testcard(), **options)
+                    if args.testcard
+                    else image.load(args.image, **options)
+                )
                 device.request(*p.img_begin())
                 for offset in range(0, len(data), 4090):
-                    chunk = data[offset:offset + 4090]
+                    chunk = data[offset : offset + 4090]
                     device.request(*p.img_data(offset, chunk))
-                    print(f'\rUploaded {offset + len(chunk)}/{len(data)} bytes', end='', file=sys.stderr, flush=True)
+                    print(
+                        f'\rUploaded {offset + len(chunk)}/{len(data)} bytes',
+                        end='',
+                        file=sys.stderr,
+                        flush=True,
+                    )
                 print('\nRefreshing...', file=sys.stderr)
                 device.request(*p.img_end(args.partial))
             elif args.action == 'console':
@@ -80,12 +100,19 @@ def main(argv=None):
                     if command:
                         raise ValueError('--stdin cannot be combined with a command')
                     return console.pipe_stdin(device)
-                return console.run(device, command or [os.environ.get('SHELL', '/bin/sh')],
-                                   args.echo)
+                return console.run(
+                    device, command or [os.environ.get('SHELL', '/bin/sh')], args.echo
+                )
         return 0
     except KeyboardInterrupt:
         return 130
-    except (DeviceError, serial.SerialException, TimeoutError, OSError, ValueError) as exc:
+    except (
+        DeviceError,
+        serial.SerialException,
+        TimeoutError,
+        OSError,
+        ValueError,
+    ) as exc:
         print(f'epaper: {exc}', file=sys.stderr)
         return 1
 

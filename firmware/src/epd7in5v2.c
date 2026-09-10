@@ -90,7 +90,8 @@ static bool panel_idle(void) {
 static void wait_idle_blocking(uint32_t timeout_ms) {
     absolute_time_t limit = make_timeout_time_ms(timeout_ms);
     while (!panel_idle()) {
-        if (absolute_time_diff_us(get_absolute_time(), limit) <= 0) return;
+        if (absolute_time_diff_us(get_absolute_time(), limit) <= 0)
+            return;
         sleep_ms(1);
     }
 }
@@ -238,8 +239,10 @@ void epd_framebuffer_fill(bool black) {
 }
 
 void epd_start_full_refresh(void) {
-    if (state != ST_IDLE) return;
-    if (!panel_ready) panel_boot();
+    if (state != ST_IDLE)
+        return;
+    if (!panel_ready)
+        panel_boot();
 
     job_is_partial = false;
     job_x_start = 0;
@@ -256,18 +259,25 @@ void epd_start_full_refresh(void) {
 
 bool epd_start_partial_refresh(uint16_t x_byte_start, uint16_t x_byte_end,
                                uint16_t y_start, uint16_t y_end) {
-    if (state != ST_IDLE) return false;
-    if (x_byte_end > EPD_ROW_BYTES) x_byte_end = EPD_ROW_BYTES;
-    if (y_end > EPD_HEIGHT) y_end = EPD_HEIGHT;
-    if (x_byte_start >= x_byte_end) return false;
-    if (y_start >= y_end) return false;
+    if (state != ST_IDLE)
+        return false;
+    if (x_byte_end > EPD_ROW_BYTES)
+        x_byte_end = EPD_ROW_BYTES;
+    if (y_end > EPD_HEIGHT)
+        y_end = EPD_HEIGHT;
+    if (x_byte_start >= x_byte_end)
+        return false;
+    if (y_start >= y_end)
+        return false;
 
-    if (!panel_ready) panel_boot();
+    if (!panel_ready)
+        panel_boot();
     if (!old_plane_valid) {
         epd_start_full_refresh();
         return true;
     }
-    if (lut_mode != LUT_FAST) enter_fast_lut_mode();
+    if (lut_mode != LUT_FAST)
+        enter_fast_lut_mode();
 
     job_is_partial = true;
     job_x_start = x_byte_start;
@@ -288,8 +298,10 @@ void epd_start_clear(bool black) {
 }
 
 void epd_start_sleep(void) {
-    if (state != ST_IDLE) return;
-    if (!panel_ready) return;
+    if (state != ST_IDLE)
+        return;
+    if (!panel_ready)
+        return;
     cmd(0x50);
     data1(0xF7);
     cmd(0x02);
@@ -303,8 +315,10 @@ static void tx_old_chunk(void) {
     memset(row, 0xFF, sizeof row);
 
     uint16_t end = tx_row + TX_ROWS_PER_POLL;
-    if (end > job_y_end) end = job_y_end;
-    for (uint16_t y = tx_row; y < end; y++) data(row, EPD_ROW_BYTES);
+    if (end > job_y_end)
+        end = job_y_end;
+    for (uint16_t y = tx_row; y < end; y++)
+        data(row, EPD_ROW_BYTES);
     tx_row = end;
 }
 
@@ -312,14 +326,16 @@ static void tx_old_chunk(void) {
  * planes take 1 = white, so every row is inverted on the way out. */
 static void tx_new_chunk(void) {
     uint16_t end = tx_row + TX_ROWS_PER_POLL;
-    if (end > job_y_end) end = job_y_end;
+    if (end > job_y_end)
+        end = job_y_end;
     size_t w = (size_t)(job_x_end - job_x_start);
 
     uint8_t row[EPD_ROW_BYTES];
     for (uint16_t y = tx_row; y < end; y++) {
         const uint8_t *src =
             epd_framebuffer + (size_t)y * EPD_ROW_BYTES + job_x_start;
-        for (size_t i = 0; i < w; i++) row[i] = (uint8_t)~src[i];
+        for (size_t i = 0; i < w; i++)
+            row[i] = (uint8_t)~src[i];
         data(row, w);
     }
     tx_row = end;
@@ -327,77 +343,80 @@ static void tx_new_chunk(void) {
 
 void epd_poll(void) {
     switch (state) {
-        case ST_IDLE:
-            break;
+    case ST_IDLE:
+        break;
 
-        case ST_POF_BUSY:
-            if (absolute_time_diff_us(get_absolute_time(), deadline) > 0) break;
-            if (panel_idle()) {
-                cmd(0x00);
-                data1(0x1F);
-                cmd(0x50);
-                data1(0x29);
-                data1(0x07);
-                lut_mode = LUT_OTP;
-
-                cmd(0x04);
-                deadline = make_timeout_time_ms(100);
-                state = ST_PON_BUSY;
-            }
+    case ST_POF_BUSY:
+        if (absolute_time_diff_us(get_absolute_time(), deadline) > 0)
             break;
+        if (panel_idle()) {
+            cmd(0x00);
+            data1(0x1F);
+            cmd(0x50);
+            data1(0x29);
+            data1(0x07);
+            lut_mode = LUT_OTP;
 
-        case ST_PON_BUSY:
-            if (absolute_time_diff_us(get_absolute_time(), deadline) > 0) break;
-            if (panel_idle()) {
-                tx_row = job_y_start;
-                cmd(0x10);
-                state = ST_TX_OLD;
-            }
-            break;
+            cmd(0x04);
+            deadline = make_timeout_time_ms(100);
+            state = ST_PON_BUSY;
+        }
+        break;
 
-        case ST_TX_OLD:
-            tx_old_chunk();
-            if (tx_row >= job_y_end) {
-                tx_row = job_y_start;
-                cmd(0x13);
-                state = ST_TX_NEW;
-            }
+    case ST_PON_BUSY:
+        if (absolute_time_diff_us(get_absolute_time(), deadline) > 0)
             break;
+        if (panel_idle()) {
+            tx_row = job_y_start;
+            cmd(0x10);
+            state = ST_TX_OLD;
+        }
+        break;
 
-        case ST_TX_NEW:
-            tx_new_chunk();
-            if (tx_row >= job_y_end) {
-                cmd(0x12);
-                /* Settle before the first BUSY poll: the panel takes a moment
-                 * to assert BUSY after DRF, and reading it too early would end
-                 * the refresh immediately. 10 ms is what the probe scripts
-                 * verified; a partial is short enough that the difference
-                 * shows, a full one is not. */
-                deadline = make_timeout_time_ms(job_is_partial ? 10 : 100);
-                state = ST_REFRESH_DELAY;
-            }
-            break;
+    case ST_TX_OLD:
+        tx_old_chunk();
+        if (tx_row >= job_y_end) {
+            tx_row = job_y_start;
+            cmd(0x13);
+            state = ST_TX_NEW;
+        }
+        break;
 
-        case ST_REFRESH_DELAY:
-            if (absolute_time_diff_us(get_absolute_time(), deadline) <= 0)
-                state = ST_REFRESH_BUSY;
-            break;
+    case ST_TX_NEW:
+        tx_new_chunk();
+        if (tx_row >= job_y_end) {
+            cmd(0x12);
+            /* Settle before the first BUSY poll: the panel takes a moment
+             * to assert BUSY after DRF, and reading it too early would end
+             * the refresh immediately. 10 ms is what the probe scripts
+             * verified; a partial is short enough that the difference
+             * shows, a full one is not. */
+            deadline = make_timeout_time_ms(job_is_partial ? 10 : 100);
+            state = ST_REFRESH_DELAY;
+        }
+        break;
 
-        case ST_REFRESH_BUSY:
-            if (panel_idle()) {
-                if (job_is_partial) cmd(0x92);
-                old_plane_valid = true;
-                state = ST_IDLE;
-            }
-            break;
+    case ST_REFRESH_DELAY:
+        if (absolute_time_diff_us(get_absolute_time(), deadline) <= 0)
+            state = ST_REFRESH_BUSY;
+        break;
 
-        case ST_SLEEP_BUSY:
-            if (panel_idle()) {
-                cmd(0x07);
-                data1(0xA5);
-                panel_ready = false;
-                state = ST_IDLE;
-            }
-            break;
+    case ST_REFRESH_BUSY:
+        if (panel_idle()) {
+            if (job_is_partial)
+                cmd(0x92);
+            old_plane_valid = true;
+            state = ST_IDLE;
+        }
+        break;
+
+    case ST_SLEEP_BUSY:
+        if (panel_idle()) {
+            cmd(0x07);
+            data1(0xA5);
+            panel_ready = false;
+            state = ST_IDLE;
+        }
+        break;
     }
 }

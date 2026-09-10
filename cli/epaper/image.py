@@ -10,9 +10,17 @@ def testcard():
     draw = ImageDraw.Draw(image)
     draw.rectangle((0, 0, 799, 479), outline='black', width=3)
     draw.text((20, 20), 'PICO 2 / WAVESHARE 800 x 480', fill='black')
-    draw.text((20, 45), datetime.now().astimezone().isoformat(timespec='seconds'), fill='black')
+    draw.text(
+        (20, 45),
+        datetime.now().astimezone().isoformat(timespec='seconds'),
+        fill='black',
+    )
     for i in range(12):
-        draw.rectangle((20 + i * 64, 90, 75 + i * 64, 155), fill='black' if i % 2 else 'white', outline='black')
+        draw.rectangle(
+            (20 + i * 64, 90, 75 + i * 64, 155),
+            fill='black' if i % 2 else 'white',
+            outline='black',
+        )
     draw.rectangle((30, 190, 370, 360), fill='black')
     draw.text((50, 220), 'WHITE ON BLACK / epaper testcard', fill='white')
     draw.ellipse((440, 190, 750, 370), fill='black')

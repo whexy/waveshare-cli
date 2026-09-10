@@ -22,12 +22,17 @@ class Command(IntEnum):
 
 
 ACK, NAK, BUSY = 0x80, 0x81, 0x82
-ERROR_NAMES = {1: 'bad length', 2: 'bad state', 3: 'out of range',
-               4: 'unknown command', 5: 'crc'}
+ERROR_NAMES = {
+    1: 'bad length',
+    2: 'bad state',
+    3: 'out of range',
+    4: 'unknown command',
+    5: 'crc',
+}
 
 
 def crc16(data):
-    return binascii.crc_hqx(data, 0xffff)
+    return binascii.crc_hqx(data, 0xFFFF)
 
 
 @dataclass(frozen=True)
@@ -54,7 +59,9 @@ class Decoder:
         while True:
             start = self.buffer.find(MAGIC)
             if start < 0:
-                self.buffer[:] = self.buffer[-1:] if self.buffer.endswith(MAGIC[:1]) else b''
+                self.buffer[:] = (
+                    self.buffer[-1:] if self.buffer.endswith(MAGIC[:1]) else b''
+                )
                 break
             del self.buffer[:start]
             if len(self.buffer) < 6:
@@ -66,21 +73,43 @@ class Decoder:
             end = 6 + length
             if len(self.buffer) < end + 2:
                 break
-            if crc16(self.buffer[2:end]) != struct.unpack_from('<H', self.buffer, end)[0]:
+            if (
+                crc16(self.buffer[2:end])
+                != struct.unpack_from('<H', self.buffer, end)[0]
+            ):
                 del self.buffer[0]
                 continue
             frames.append(Frame(cmd, seq, bytes(self.buffer[6:end])))
-            del self.buffer[:end + 2]
+            del self.buffer[: end + 2]
         return frames
 
 
-def ping(): return Command.PING, b''
-def info(): return Command.INFO, b''
-def clear(black=False): return Command.CLEAR, bytes([int(black)])
-def img_begin(): return Command.IMG_BEGIN, struct.pack('<HHB', 800, 480, 0)
-def img_end(partial=False): return Command.IMG_END, bytes([int(partial)])
-def sleep(): return Command.SLEEP, b''
-def reset_bootsel(): return Command.RESET_BOOTSEL, b''
+def ping():
+    return Command.PING, b''
+
+
+def info():
+    return Command.INFO, b''
+
+
+def clear(black=False):
+    return Command.CLEAR, bytes([int(black)])
+
+
+def img_begin():
+    return Command.IMG_BEGIN, struct.pack('<HHB', 800, 480, 0)
+
+
+def img_end(partial=False):
+    return Command.IMG_END, bytes([int(partial)])
+
+
+def sleep():
+    return Command.SLEEP, b''
+
+
+def reset_bootsel():
+    return Command.RESET_BOOTSEL, b''
 
 
 def img_data(offset, data):
@@ -89,13 +118,21 @@ def img_data(offset, data):
     return Command.IMG_DATA, struct.pack('<I', offset) + data
 
 
-def status(): return Command.STATUS, b''
-def refresh(full=False): return Command.REFRESH, bytes([0 if full else 1])
+def status():
+    return Command.STATUS, b''
+
+
+def refresh(full=False):
+    return Command.REFRESH, bytes([0 if full else 1])
 
 
 def blit(x_byte, y, w_bytes, h, bits):
-    if not (0 <= x_byte < 100 and 0 <= y < 480 and
-            0 < w_bytes <= 100 - x_byte and 0 < h <= 480 - y):
+    if not (
+        0 <= x_byte < 100
+        and 0 <= y < 480
+        and 0 < w_bytes <= 100 - x_byte
+        and 0 < h <= 480 - y
+    ):
         raise ValueError('BLIT out of bounds')
     if len(bits) != w_bytes * h or len(bits) > 4088:
         raise ValueError('BLIT length mismatch')

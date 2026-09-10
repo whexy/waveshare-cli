@@ -6,8 +6,8 @@ from epaper import protocol as p
 
 class ProtocolTests(unittest.TestCase):
     def test_crc_vector(self):
-        self.assertEqual(p.crc16(b'123456789'), 0x29b1)
-        self.assertEqual(p.crc16(b''), 0xffff)
+        self.assertEqual(p.crc16(b'123456789'), 0x29B1)
+        self.assertEqual(p.crc16(b''), 0xFFFF)
 
     def test_roundtrip(self):
         payload = bytes(range(256)) * 16
@@ -25,16 +25,22 @@ class ProtocolTests(unittest.TestCase):
         oversized = p.MAGIC + struct.pack('<BBH', 1, 1, 4097)
         decoder = p.Decoder()
         self.assertEqual(decoder.feed(b'garbage\xeb'), [])
-        self.assertEqual(decoder.feed(b'junk' + damaged + oversized + valid), [p.Frame(1, 2, b'')])
+        self.assertEqual(
+            decoder.feed(b'junk' + damaged + oversized + valid), [p.Frame(1, 2, b'')]
+        )
 
     def test_multiple(self):
         self.assertEqual(len(p.Decoder().feed(p.encode(1, 0) * 2)), 2)
 
     def test_blit_status(self):
-        self.assertEqual(p.blit(2,16,1,16,b'0'*16)[1], struct.pack('<HHHH',2,16,1,16)+b'0'*16)
-        state = p.parse_status(struct.pack('<BHIBHHHH',1,2,300,1,2,16,3,32))
-        self.assertEqual((state.busy,state.y1),(1,32))
-        with self.assertRaises(ValueError): p.blit(99,0,2,1,b'xx')
+        self.assertEqual(
+            p.blit(2, 16, 1, 16, b'0' * 16)[1],
+            struct.pack('<HHHH', 2, 16, 1, 16) + b'0' * 16,
+        )
+        state = p.parse_status(struct.pack('<BHIBHHHH', 1, 2, 300, 1, 2, 16, 3, 32))
+        self.assertEqual((state.busy, state.y1), (1, 32))
+        with self.assertRaises(ValueError):
+            p.blit(99, 0, 2, 1, b'xx')
 
     def test_limits(self):
         with self.assertRaises(ValueError):

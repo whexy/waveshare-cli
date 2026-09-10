@@ -7,8 +7,8 @@
 #define PROTO_MAGIC0 0xEB
 #define PROTO_MAGIC1 0x90
 
-#define PROTO_HEADER_BYTES  6
-#define PROTO_MAX_PAYLOAD   4096
+#define PROTO_HEADER_BYTES 6
+#define PROTO_MAX_PAYLOAD  4096
 
 #define CMD_PING          0x01
 #define CMD_INFO          0x02

@@ -4,10 +4,10 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define EPD_WIDTH        800
-#define EPD_HEIGHT       480
-#define EPD_ROW_BYTES    (EPD_WIDTH / 8)
-#define EPD_FRAME_BYTES  (EPD_ROW_BYTES * EPD_HEIGHT)
+#define EPD_WIDTH       800
+#define EPD_HEIGHT      480
+#define EPD_ROW_BYTES   (EPD_WIDTH / 8)
+#define EPD_FRAME_BYTES (EPD_ROW_BYTES * EPD_HEIGHT)
 
 /* A set bit is black, MSB is the leftmost pixel, first byte is the top-left of
  * the panel. Both panel RAM planes take the opposite convention, so rows are
