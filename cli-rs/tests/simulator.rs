@@ -104,6 +104,18 @@ impl Simulator {
         bands
     }
 
+    /// The distinct tones the rendered panel carries, darkest first.
+    fn tones(&self) -> Vec<u8> {
+        let image = ::image::open(&self.output)
+            .expect("simulator wrote a PNG")
+            .to_luma8();
+        assert_eq!((image.width(), image.height()), (800, 480));
+        let mut tones: Vec<u8> = image.pixels().map(|pixel| pixel.0[0]).collect();
+        tones.sort_unstable();
+        tones.dedup();
+        tones
+    }
+
     /// Every panel pixel, so two runs can be compared exactly rather than by
     /// which bands happen to carry ink.
     fn pixels(&self) -> Vec<u8> {
@@ -145,6 +157,49 @@ fn ping_returns_pong() {
     let sim = Simulator::start("ping").expect("simulator starts");
     let output = sim.run(&["ping"], None);
     assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "PONG");
+}
+
+/// Gray has to reach the panel as four tones; a wrong plane split still
+/// renders a plausible image, so the count is what catches it.
+#[test]
+fn a_gray_gradient_reaches_the_panel_as_four_tones() {
+    if !available() {
+        return;
+    }
+    let sim = Simulator::start("gray").expect("simulator starts");
+    let source = std::env::temp_dir().join("epaper-gray-source.png");
+    let mut gradient = ::image::GrayImage::new(800, 480);
+    for (x, _y, pixel) in gradient.enumerate_pixels_mut() {
+        *pixel = ::image::Luma([(x * 255 / 799) as u8]);
+    }
+    gradient.save(&source).expect("gradient is written");
+
+    sim.run(&["draw", source.to_str().expect("utf-8 path"), "--gray"], None);
+    // IMG_END only starts the refresh; the simulator renders when it finishes.
+    std::thread::sleep(std::time::Duration::from_millis(3000));
+    assert_eq!(sim.tones(), vec![0, 85, 170, 255]);
+
+    // The same source in mono must stay bilevel, so gray cannot leak into the
+    // path the console shares.
+    let mono = Simulator::start("gray-mono").expect("simulator starts");
+    mono.run(&["draw", source.to_str().expect("utf-8 path")], None);
+    std::thread::sleep(std::time::Duration::from_millis(4600));
+    assert_eq!(mono.tones(), vec![0, 255]);
+}
+
+/// Gray cannot refresh partially, and the failure must be refused up front
+/// rather than reaching the panel as a torn frame.
+#[test]
+fn gray_refuses_a_partial_refresh() {
+    if !available() {
+        return;
+    }
+    let sim = Simulator::start("gray-partial").expect("simulator starts");
+    let output = Command::new(binary())
+        .args(["--port", &sim.port, "draw", "--testcard", "--gray", "--partial"])
+        .output()
+        .expect("the binary runs");
+    assert!(!output.status.success(), "gray with --partial must fail");
 }
 
 #[test]

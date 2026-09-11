@@ -12,6 +12,39 @@ pub const BUSY: u8 = 0x82;
 /// Framebuffer size in bytes; IMG_DATA offsets are bounded by it.
 pub const FRAMEBUFFER_BYTES: u32 = 48000;
 
+/// 4-gray packs two bits per pixel, so the framebuffer doubles.
+pub const GRAY4_FRAMEBUFFER_BYTES: u32 = 96000;
+
+/// Pixel format negotiated by IMG_BEGIN.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Format {
+    #[default]
+    Mono,
+    Gray4,
+}
+
+impl Format {
+    pub fn wire(self) -> u8 {
+        match self {
+            Format::Mono => 0,
+            Format::Gray4 => 1,
+        }
+    }
+
+    pub fn frame_bytes(self) -> u32 {
+        match self {
+            Format::Mono => FRAMEBUFFER_BYTES,
+            Format::Gray4 => GRAY4_FRAMEBUFFER_BYTES,
+        }
+    }
+
+    /// Gray spends both panel RAM planes on its two bits, leaving no plane to
+    /// diff against, so the device can only refresh it in full.
+    pub fn supports_partial(self) -> bool {
+        self == Format::Mono
+    }
+}
+
 /// IMG_DATA carries a u32 offset ahead of the pixels, so a full payload holds
 /// this much data.
 pub const IMG_DATA_MAX: usize = 4090;
@@ -185,10 +218,14 @@ pub fn refresh(full: bool) -> (Command, Vec<u8>) {
 }
 
 pub fn img_begin() -> (Command, Vec<u8>) {
+    img_begin_format(Format::Mono)
+}
+
+pub fn img_begin_format(format: Format) -> (Command, Vec<u8>) {
     let mut payload = Vec::with_capacity(5);
     payload.extend_from_slice(&800u16.to_le_bytes());
     payload.extend_from_slice(&480u16.to_le_bytes());
-    payload.push(0);
+    payload.push(format.wire());
     (Command::ImgBegin, payload)
 }
 
@@ -196,9 +233,28 @@ pub fn img_end(partial: bool) -> (Command, Vec<u8>) {
     (Command::ImgEnd, vec![u8::from(partial)])
 }
 
+pub fn img_end_format(
+    format: Format,
+    partial: bool,
+) -> Result<(Command, Vec<u8>), ProtocolError> {
+    if partial && !format.supports_partial() {
+        return err("4-gray cannot refresh partially");
+    }
+    Ok(img_end(partial))
+}
+
 pub fn img_data(offset: u32, data: &[u8]) -> Result<(Command, Vec<u8>), ProtocolError> {
-    if offset > FRAMEBUFFER_BYTES
-        || offset as usize + data.len() > FRAMEBUFFER_BYTES as usize
+    img_data_format(Format::Mono, offset, data)
+}
+
+pub fn img_data_format(
+    format: Format,
+    offset: u32,
+    data: &[u8],
+) -> Result<(Command, Vec<u8>), ProtocolError> {
+    let capacity = format.frame_bytes();
+    if offset > capacity
+        || offset as usize + data.len() > capacity as usize
         || data.len() > IMG_DATA_MAX
     {
         return err("image chunk out of range");

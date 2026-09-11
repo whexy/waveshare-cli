@@ -27,6 +27,7 @@ static size_t ring_head, ring_tail;
 static uint8_t frame[PROTO_HEADER_BYTES + PROTO_MAX_PAYLOAD + 2];
 
 static bool image_open;
+static bool image_is_gray;
 
 /* Region of the framebuffer written since the last refresh, x in byte columns
  * and y in rows, both half-open. */
@@ -157,6 +158,15 @@ static void start_full(void) {
     dirty_reset();
 }
 
+/* A gray refresh drives the whole panel and leaves no mono diff base, so it
+ * counts as a full one for the host's ghosting budget. */
+static void start_gray(void) {
+    epd_start_gray_refresh();
+    partials_since_full = 0;
+    last_full_ms = to_ms_since_boot(get_absolute_time());
+    dirty_reset();
+}
+
 /* The device may run a partial as a full one; keep the counters describing
  * what the panel actually did so the host's ghosting budget stays honest. */
 static void start_partial(uint16_t x0, uint16_t x1, uint16_t y0, uint16_t y1) {
@@ -228,10 +238,10 @@ static void handle_command(uint8_t type, uint8_t seq, const uint8_t *payload,
 
     case CMD_INFO: {
         char info[96];
-        int n =
-            snprintf(info, sizeof info,
-                     "epaper-fw " FW_VERSION " panel=7in5_v2 w=%d h=%d proto=2",
-                     EPD_WIDTH, EPD_HEIGHT);
+        int n = snprintf(info, sizeof info,
+                         "epaper-fw " FW_VERSION
+                         " panel=7in5_v2 w=%d h=%d proto=2 gray=4",
+                         EPD_WIDTH, EPD_HEIGHT);
         send_ack(seq, (const uint8_t *)info, (size_t)n);
         break;
     }
@@ -260,10 +270,11 @@ static void handle_command(uint8_t type, uint8_t seq, const uint8_t *payload,
         } else {
             uint16_t w = rd_u16(payload);
             uint16_t h = rd_u16(payload + 2);
-            if (w != EPD_WIDTH || h != EPD_HEIGHT || payload[4] != 0) {
+            if (w != EPD_WIDTH || h != EPD_HEIGHT || payload[4] > 1) {
                 send_nak(seq, ERR_RANGE);
             } else {
                 image_open = true;
+                image_is_gray = payload[4] == 1;
                 send_ack(seq, NULL, 0);
             }
         }
@@ -281,10 +292,14 @@ static void handle_command(uint8_t type, uint8_t seq, const uint8_t *payload,
                            ((uint32_t)payload[2] << 16) |
                            ((uint32_t)payload[3] << 24);
             size_t n = len - 4;
-            if (off > EPD_FRAME_BYTES || n > EPD_FRAME_BYTES - off) {
+            uint8_t *target =
+                image_is_gray ? epd_gray_framebuffer : epd_framebuffer;
+            size_t capacity =
+                image_is_gray ? EPD_GRAY_FRAME_BYTES : EPD_FRAME_BYTES;
+            if (off > capacity || n > capacity - off) {
                 send_nak(seq, ERR_RANGE);
             } else {
-                memcpy(epd_framebuffer + off, payload + 4, n);
+                memcpy(target + off, payload + 4, n);
                 send_ack(seq, NULL, 0);
             }
         }
@@ -298,8 +313,16 @@ static void handle_command(uint8_t type, uint8_t seq, const uint8_t *payload,
         } else if (epd_is_busy()) {
             send_busy(seq);
         } else {
+            /* Gray spends both panel RAM planes on its two bits, so there is
+             * no plane left to diff a partial against. */
+            if (payload[0] == 1 && image_is_gray) {
+                send_nak(seq, ERR_RANGE);
+                break;
+            }
             image_open = false;
-            if (payload[0] == 1) {
+            if (image_is_gray) {
+                start_gray();
+            } else if (payload[0] == 1) {
                 start_partial(0, EPD_ROW_BYTES, 0, EPD_HEIGHT);
             } else {
                 start_full();

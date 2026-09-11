@@ -64,6 +64,7 @@ enum Action {
     },
     #[command(group(ArgGroup::new("source").required(true).args(["image", "testcard"])))]
     #[command(group(ArgGroup::new("mono").args(["dither", "threshold"])))]
+    #[command(group(ArgGroup::new("tones").args(["gray", "threshold"])))]
     Draw {
         image: Option<String>,
         #[arg(long, action = ArgAction::SetTrue)]
@@ -78,7 +79,10 @@ enum Action {
         threshold: u8,
         #[arg(long, action = ArgAction::SetTrue)]
         invert: bool,
+        /// render four tones instead of black and white (~2.6 s, no partial)
         #[arg(long, action = ArgAction::SetTrue)]
+        gray: bool,
+        #[arg(long, action = ArgAction::SetTrue, conflicts_with = "gray")]
         partial: bool,
     },
     Console {
@@ -142,8 +146,14 @@ fn run(cli: &Cli) -> Result<u8> {
             dither,
             threshold,
             invert,
+            gray,
             partial,
         } => {
+            let format = if *gray {
+                p::Format::Gray4
+            } else {
+                p::Format::Mono
+            };
             let options = PackOptions {
                 fit: match fit.as_str() {
                     "fill" => Fit::Fill,
@@ -154,6 +164,7 @@ fn run(cli: &Cli) -> Result<u8> {
                 dither: *dither,
                 threshold: *threshold,
                 invert: *invert,
+                format,
             };
             let data = if *testcard {
                 let card = image::testcard()?;
@@ -165,16 +176,16 @@ fn run(cli: &Cli) -> Result<u8> {
                 let path = path.as_deref().expect("clap requires a source");
                 image::load(path, &options)?
             };
-            let (command, payload) = p::img_begin();
+            let (command, payload) = p::img_begin_format(format);
             device.request(command, &payload)?;
             for offset in (0..data.len()).step_by(p::IMG_DATA_MAX) {
                 let chunk = &data[offset..(offset + p::IMG_DATA_MAX).min(data.len())];
-                let (command, payload) = p::img_data(offset as u32, chunk)?;
+                let (command, payload) = p::img_data_format(format, offset as u32, chunk)?;
                 device.request(command, &payload)?;
                 eprint!("\rUploaded {}/{} bytes", offset + chunk.len(), data.len());
             }
             eprintln!("\nRefreshing...");
-            let (command, payload) = p::img_end(*partial);
+            let (command, payload) = p::img_end_format(format, *partial)?;
             device.request(command, &payload)?;
         }
         Action::Text {

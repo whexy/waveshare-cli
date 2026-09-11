@@ -30,10 +30,12 @@
 #define LUT_BYTES 42
 
 uint8_t epd_framebuffer[EPD_FRAME_BYTES];
+uint8_t epd_gray_framebuffer[EPD_GRAY_FRAME_BYTES];
 
 typedef enum {
     LUT_OTP,
     LUT_FAST,
+    LUT_GRAY,
 } lut_mode_t;
 
 typedef enum {
@@ -45,6 +47,10 @@ typedef enum {
     ST_REFRESH_DELAY,
     ST_REFRESH_BUSY,
     ST_SLEEP_BUSY,
+    ST_GRAY_POF_BUSY,
+    ST_GRAY_PON_BUSY,
+    ST_GRAY_TX_LSB,
+    ST_GRAY_TX_MSB,
 } state_t;
 
 static state_t state = ST_IDLE;
@@ -55,6 +61,7 @@ static bool panel_ready;
  * drive pixels against garbage, so the first one is promoted to a full. */
 static bool old_plane_valid;
 static bool job_is_partial;
+static bool job_is_gray;
 static uint16_t job_x_start, job_x_end;
 static uint16_t job_y_start, job_y_end;
 static uint16_t tx_row;
@@ -185,6 +192,35 @@ static void enter_fast_lut_mode(void) {
     lut_mode = LUT_FAST;
 }
 
+/* Select the factory 4-gray waveform. 0xE0/0xE5 are cascade/force-temperature
+ * registers: TSFIX=1 makes the panel index its OTP waveform table by the byte
+ * in 0xE5 rather than by measured temperature, and 0x5F is the gray entry
+ * (0x5A is fast mono, 0x6E the OTP partial). Neither the index values nor the
+ * gray waveform itself appear in the UC8179 datasheet; both come from
+ * Waveshare's driver. Gray needs the stronger booster settings to reach its
+ * mid-tones. */
+static void enter_gray_mode(void) {
+    cmd(0x00);
+    data1(0x1F);
+
+    cmd(0x50);
+    data1(0x10);
+    data1(0x07);
+
+    cmd(0x06);
+    data1(0x27);
+    data1(0x27);
+    data1(0x18);
+    data1(0x17);
+
+    cmd(0xE0);
+    data1(0x02);
+    cmd(0xE5);
+    data1(0x5F);
+
+    lut_mode = LUT_GRAY;
+}
+
 static void set_window(void) {
     cmd(0x91);
     cmd(0x90);
@@ -238,6 +274,26 @@ void epd_framebuffer_fill(bool black) {
     memset(epd_framebuffer, black ? 0xFF : 0x00, sizeof epd_framebuffer);
 }
 
+void epd_start_gray_refresh(void) {
+    if (state != ST_IDLE)
+        return;
+    if (!panel_ready)
+        panel_boot();
+
+    job_is_partial = false;
+    job_is_gray = true;
+    job_x_start = 0;
+    job_x_end = EPD_ROW_BYTES;
+    job_y_start = 0;
+    job_y_end = EPD_HEIGHT;
+
+    /* Like the OTP full refresh, the gray waveform only reaches its tones
+     * from a power-cycled panel. */
+    cmd(0x02);
+    deadline = make_timeout_time_ms(10);
+    state = ST_GRAY_POF_BUSY;
+}
+
 void epd_start_full_refresh(void) {
     if (state != ST_IDLE)
         return;
@@ -245,6 +301,7 @@ void epd_start_full_refresh(void) {
         panel_boot();
 
     job_is_partial = false;
+    job_is_gray = false;
     job_x_start = 0;
     job_x_end = EPD_ROW_BYTES;
     job_y_start = 0;
@@ -280,6 +337,7 @@ bool epd_start_partial_refresh(uint16_t x_byte_start, uint16_t x_byte_end,
         enter_fast_lut_mode();
 
     job_is_partial = true;
+    job_is_gray = false;
     job_x_start = x_byte_start;
     job_x_end = x_byte_end;
     job_y_start = y_start;
@@ -322,6 +380,39 @@ static void tx_old_chunk(void) {
     tx_row = end;
 }
 
+/* One bit of the 2-bit gray level per plane. The wire format stores darkness
+ * (0 white, 3 black) and the panel planes take 1 = white, so the inversion
+ * that mono needs cancels against the level encoding: plane 0x10 carries the
+ * low bit and 0x13 the high bit, both uninverted. Verified against
+ * Waveshare's display_4Gray for all four tones. */
+static void tx_gray_chunk(bool high_bit) {
+    uint16_t end = tx_row + TX_ROWS_PER_POLL;
+    if (end > job_y_end)
+        end = job_y_end;
+
+    uint8_t row[EPD_ROW_BYTES];
+    for (uint16_t y = tx_row; y < end; y++) {
+        const uint8_t *src =
+            epd_gray_framebuffer + (size_t)y * EPD_GRAY_ROW_BYTES;
+        for (size_t i = 0; i < EPD_ROW_BYTES; i++) {
+            /* Each output byte is 8 pixels, so two input bytes of 4 pixels. */
+            uint8_t packed = 0;
+            for (size_t half = 0; half < 2; half++) {
+                uint8_t quad = src[i * 2 + half];
+                for (size_t pixel = 0; pixel < 4; pixel++) {
+                    uint8_t level = (uint8_t)((quad >> (6 - 2 * pixel)) & 0x03);
+                    uint8_t bit = high_bit ? (uint8_t)(level >> 1)
+                                           : (uint8_t)(level & 0x01);
+                    packed = (uint8_t)((packed << 1) | bit);
+                }
+            }
+            row[i] = packed;
+        }
+        data(row, EPD_ROW_BYTES);
+    }
+    tx_row = end;
+}
+
 /* New plane, window-sized. The framebuffer stores 1 = black; both panel RAM
  * planes take 1 = white, so every row is inverted on the way out. */
 static void tx_new_chunk(void) {
@@ -355,6 +446,19 @@ void epd_poll(void) {
             cmd(0x50);
             data1(0x29);
             data1(0x07);
+            if (lut_mode == LUT_GRAY) {
+                /* Gray forced the OTP waveform index with TSFIX=1, which
+                 * applies to every later OTP refresh too; hand temperature
+                 * back to the sensor and undo gray's booster settings, or the
+                 * full refresh silently runs the gray waveform. */
+                cmd(0xE0);
+                data1(0x00);
+                cmd(0x06);
+                data1(0x17);
+                data1(0x17);
+                data1(0x28);
+                data1(0x17);
+            }
             lut_mode = LUT_OTP;
 
             cmd(0x04);
@@ -401,11 +505,52 @@ void epd_poll(void) {
             state = ST_REFRESH_BUSY;
         break;
 
+    case ST_GRAY_POF_BUSY:
+        if (absolute_time_diff_us(get_absolute_time(), deadline) > 0)
+            break;
+        if (panel_idle()) {
+            enter_gray_mode();
+            cmd(0x04);
+            deadline = make_timeout_time_ms(100);
+            state = ST_GRAY_PON_BUSY;
+        }
+        break;
+
+    case ST_GRAY_PON_BUSY:
+        if (absolute_time_diff_us(get_absolute_time(), deadline) > 0)
+            break;
+        if (panel_idle()) {
+            tx_row = job_y_start;
+            cmd(0x10);
+            state = ST_GRAY_TX_LSB;
+        }
+        break;
+
+    case ST_GRAY_TX_LSB:
+        tx_gray_chunk(false);
+        if (tx_row >= job_y_end) {
+            tx_row = job_y_start;
+            cmd(0x13);
+            state = ST_GRAY_TX_MSB;
+        }
+        break;
+
+    case ST_GRAY_TX_MSB:
+        tx_gray_chunk(true);
+        if (tx_row >= job_y_end) {
+            cmd(0x12);
+            deadline = make_timeout_time_ms(100);
+            state = ST_REFRESH_DELAY;
+        }
+        break;
+
     case ST_REFRESH_BUSY:
         if (panel_idle()) {
             if (job_is_partial)
                 cmd(0x92);
-            old_plane_valid = true;
+            /* Gray leaves both planes holding its own bits, so there is no
+             * mono old plane for a later partial to diff against. */
+            old_plane_valid = !job_is_gray;
             state = ST_IDLE;
         }
         break;

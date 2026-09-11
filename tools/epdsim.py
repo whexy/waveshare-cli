@@ -20,6 +20,7 @@ MAGIC = b'\xeb\x90'
 WIDTH = 800
 HEIGHT = 480
 FRAMEBUFFER_SIZE = WIDTH * HEIGHT // 8
+GRAY_FRAMEBUFFER_SIZE = WIDTH * HEIGHT // 4
 MAX_PAYLOAD = 4096
 OUTPUT_PATH = Path('/tmp/epdsim.png')
 
@@ -86,8 +87,11 @@ class Simulator:
         self.clock = clock
         self.parser = FrameParser()
         self.framebuffer = bytearray(FRAMEBUFFER_SIZE)
+        self.gray_framebuffer = bytearray(GRAY_FRAMEBUFFER_SIZE)
         self.bbox = None
         self.image_active = False
+        self.image_is_gray = False
+        self.pending_is_gray = False
         self.until = 0
         self.partials = 0
         self.last_full = clock()
@@ -95,16 +99,29 @@ class Simulator:
 
     def poll(self):
         if self.pending is not None and self.clock() >= self.until:
-            Image.frombytes('1', (800, 480), bytes(b ^ 255 for b in self.pending)).save(
-                self.output
-            )
+            if self.pending_is_gray:
+                # Two bits per pixel carrying darkness; render the four tones
+                # as the levels the panel approximates.
+                tones = (255, 170, 85, 0)
+                pixels = bytearray(WIDTH * HEIGHT)
+                for index, byte in enumerate(self.pending):
+                    base = index * 4
+                    for offset in range(4):
+                        level = (byte >> (6 - 2 * offset)) & 0b11
+                        pixels[base + offset] = tones[level]
+                Image.frombytes('L', (WIDTH, HEIGHT), bytes(pixels)).save(self.output)
+            else:
+                Image.frombytes(
+                    '1', (WIDTH, HEIGHT), bytes(b ^ 255 for b in self.pending)
+                ).save(self.output)
             self.pending = None
 
-    def start(self, mode):
-        self.pending = bytes(self.framebuffer)
-        self.until = self.clock() + (0.5 if mode else 4.3)
+    def start(self, mode, gray=False):
+        self.pending = bytes(self.gray_framebuffer if gray else self.framebuffer)
+        self.pending_is_gray = gray
+        self.until = self.clock() + (2.6 if gray else 0.5 if mode else 4.3)
         self.bbox = None
-        if mode:
+        if mode and not gray:
             self.partials += 1
         else:
             self.partials = 0
@@ -127,7 +144,7 @@ class Simulator:
             if command == 1:
                 return ack(b'PONG')
             if command == 2:
-                return ack(b'epaper-sim 0.2.0 panel=7in5_v2 w=800 h=480 proto=2')
+                return ack(b'epaper-sim 0.2.0 panel=7in5_v2 w=800 h=480 proto=2 gray=4')
             if command == 5:
                 return ack(
                     struct.pack(
@@ -149,9 +166,11 @@ class Simulator:
         if command == 16:
             if len(data) != 5:
                 return nak(1)
-            if data != struct.pack('<HHB', 800, 480, 0):
+            width, height, fmt = struct.unpack('<HHB', data)
+            if (width, height) != (WIDTH, HEIGHT) or fmt > 1:
                 return nak(3)
             self.image_active = True
+            self.image_is_gray = fmt == 1
             return ack()
         if command == 17:
             if len(data) < 4:
@@ -159,9 +178,10 @@ class Simulator:
             if not self.image_active:
                 return nak(2)
             offset = struct.unpack_from('<I', data)[0]
-            if offset + len(data) - 4 > 48000:
+            target = self.gray_framebuffer if self.image_is_gray else self.framebuffer
+            if offset + len(data) - 4 > len(target):
                 return nak(3)
-            self.framebuffer[offset : offset + len(data) - 4] = data[4:]
+            target[offset : offset + len(data) - 4] = data[4:]
             return ack()
         if command == 19:
             if len(data) < 8:
@@ -184,8 +204,14 @@ class Simulator:
             if command == 18:
                 if not self.image_active:
                     return nak(2)
+                # Gray uses both panel planes for its two bits, leaving none to
+                # diff a partial against.
+                if data[0] and self.image_is_gray:
+                    return nak(3)
                 self.image_active = False
-            elif data[0] and self.bbox is None:
+                self.start(data[0], gray=self.image_is_gray)
+                return ack()
+            if data[0] and self.bbox is None:
                 return nak(2)
             self.start(data[0])
             return ack()

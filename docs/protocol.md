@@ -32,9 +32,9 @@ Every host command gets exactly one response frame with the same `seq`.
 | 0x02 | INFO           | none                                            |
 | 0x04 | CLEAR          | u8 color: 0 = white, 1 = black (full refresh)   |
 | 0x05 | STATUS         | none                                            |
-| 0x10 | IMG_BEGIN      | u16 width (800), u16 height (480), u8 fmt (0 = 1bpp packed, MSB first, 1 = black) |
+| 0x10 | IMG_BEGIN      | u16 width (800), u16 height (480), u8 fmt (0 = 1bpp packed, MSB first, 1 = black; 1 = 2bpp 4-gray) |
 | 0x11 | IMG_DATA       | u32 offset, then up to 4090 bytes of image data |
-| 0x12 | IMG_END        | u8 refresh: 0 = full, 1 = partial (whole frame) |
+| 0x12 | IMG_END        | u8 refresh: 0 = full, 1 = partial (whole frame); NAK 3 for partial in 4-gray |
 | 0x13 | BLIT           | u16 x_byte, u16 y, u16 w_bytes, u16 h, then w_bytes*h bits (row-major, MSB = leftmost pixel, 1 = black) |
 | 0x14 | REFRESH        | u8 mode: 0 = full, 1 = partial (dirty bbox)     |
 | 0x30 | SLEEP          | none (panel deep sleep; any later command wakes)|
@@ -43,6 +43,33 @@ Every host command gets exactly one response frame with the same `seq`.
 The framebuffer is exactly 800*480/8 = 48000 bytes, 100 bytes per row.
 IMG_DATA writes into it at `offset`; IMG_END pushes the whole frame to the
 panel.
+
+## 4-gray (fmt 1)
+
+The panel holds four tones. `IMG_BEGIN` with fmt 1 selects a separate 2bpp
+buffer of 800*480/4 = 96000 bytes, 200 bytes per row, which IMG_DATA offsets
+are bounded by instead. Two bits per pixel carry *darkness* — 0 = white,
+1 = light, 2 = dark, 3 = black — leftmost pixel in the high bits, extending
+1bpp's "one is black". The device splits those bits across the panel's two RAM
+planes: 0x10 takes the low bit and 0x13 the high bit, both uninverted (the
+inversion 1bpp needs cancels against this encoding; verified against
+Waveshare's `display_4Gray` for all four tones).
+
+Gray is whole-panel only, about 2.6 s. It spends both RAM planes on its two
+bits, so no plane is left as a diff base and there is no fast partial: IMG_END
+with refresh = 1 is answered NAK 3. For the same reason a gray refresh leaves
+the device's old plane holding gray bits, so the next mono partial is promoted
+to a full refresh, exactly as after power-up or deep sleep. Gray and the fast
+partial path are mutually exclusive device modes, not composable flags; the
+console therefore stays 1bpp.
+
+BLIT is 1bpp only and addresses x in whole *bytes*, which would mean a
+different pixel column at 2bpp; it is not accepted against the gray buffer.
+
+The panel's gray waveform is an undocumented OTP entry selected by
+`0xE0 = 0x02` (force temperature) and `0xE5 = 0x5F`, and reportedly only works
+on panels sold after 2024-10-23. Hosts should read `gray=4` from INFO rather
+than assume it.
 
 BLIT writes a rectangle straight into the framebuffer (`x_byte + w_bytes <=
 100`, `y + h <= 480`, payload length must equal `8 + w_bytes*h`; NAK 3 / 1
@@ -76,7 +103,8 @@ refresh silently re-runs the boot sequence, costing about 0.2 s extra.
 
 ACK payloads:
 - PING: 4 bytes "PONG"
-- INFO: ASCII, e.g. `epaper-fw 0.3.0 panel=7in5_v2 w=800 h=480 proto=2`
+- INFO: ASCII, e.g. `epaper-fw 0.3.0 panel=7in5_v2 w=800 h=480 proto=2 gray=4`
+  (`gray=4` advertises 4-gray support; absent means fmt 1 is unavailable)
 - STATUS: u8 busy (1 = refresh in flight), u16 partials_since_full,
   u32 ms_since_full (LE), u8 bbox_valid, u16 x_byte0, u16 y0, u16 x_byte1,
   u16 y1 (bbox is [x0,x1) x [y0,y1), only meaningful if bbox_valid)

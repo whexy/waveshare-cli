@@ -9,10 +9,17 @@
 #define EPD_ROW_BYTES   (EPD_WIDTH / 8)
 #define EPD_FRAME_BYTES (EPD_ROW_BYTES * EPD_HEIGHT)
 
+/* 4-gray carries two bits per pixel in its own buffer: 0 is white and 3 is
+ * black, leftmost pixel in the high bits. */
+#define EPD_GRAY_ROW_BYTES   (EPD_WIDTH / 4)
+#define EPD_GRAY_FRAME_BYTES (EPD_GRAY_ROW_BYTES * EPD_HEIGHT)
+
 /* A set bit is black, MSB is the leftmost pixel, first byte is the top-left of
  * the panel. Both panel RAM planes take the opposite convention, so rows are
  * inverted on the way out. */
 extern uint8_t epd_framebuffer[EPD_FRAME_BYTES];
+
+extern uint8_t epd_gray_framebuffer[EPD_GRAY_FRAME_BYTES];
 
 void epd_init_hardware(void);
 
@@ -24,6 +31,12 @@ void epd_poll(void);
 bool epd_is_busy(void);
 
 void epd_start_full_refresh(void);
+
+/* Push epd_gray_framebuffer as four tones. Always a whole-panel refresh of
+ * about 2.6 s: gray needs both panel RAM planes for its two bits, so no plane
+ * is left to diff a partial against. Leaves the panel's old-data RAM holding
+ * gray bits, which is why the next mono partial must run as a full refresh. */
+void epd_start_gray_refresh(void);
 /* Window x bounds are byte columns, [x_byte_start, x_byte_end); the panel can
  * only address whole bytes horizontally. y bounds are rows, [y_start, y_end).
  * Returns true if the request had to run as a full refresh instead, which

@@ -1,11 +1,12 @@
 //! Testcard generation and 1-bit packing for the wire format.
 
 use anyhow::{bail, Result};
-use image::imageops::{self, FilterType};
+use image::imageops::{self, ColorMap, FilterType};
 use image::{GrayImage, Luma, Rgba, RgbaImage};
 
 use crate::font::find_font;
 use crate::geometry::{PANEL_HEIGHT, PANEL_WIDTH};
+use crate::protocol::Format;
 
 const WIDTH: u32 = PANEL_WIDTH as u32;
 const HEIGHT: u32 = PANEL_HEIGHT as u32;
@@ -24,6 +25,38 @@ pub enum Fit {
     Fit,
     Fill,
     Stretch,
+}
+
+/// The four tones the panel can hold, as the luma the host renders them at.
+/// Evenly spaced so dithering error diffuses symmetrically; the panel's actual
+/// mid-tones sit closer together than this, which costs contrast rather than
+/// correctness.
+const GRAY4_LEVELS: [u8; 4] = [0, 85, 170, 255];
+
+/// Quantiser for the 4-gray palette, used as the dither target so the error
+/// diffusion in `imageops::dither` lands on tones the panel can hold.
+struct Gray4;
+
+impl ColorMap for Gray4 {
+    type Color = Luma<u8>;
+
+    fn index_of(&self, color: &Luma<u8>) -> usize {
+        // Round to the nearest level rather than truncating, so a tone sitting
+        // just below a boundary does not bias an entire image darker.
+        ((color.0[0] as u16 * 3 + 127) / 255) as usize
+    }
+
+    fn lookup(&self, index: usize) -> Option<Luma<u8>> {
+        GRAY4_LEVELS.get(index).map(|&level| Luma([level]))
+    }
+
+    fn has_lookup(&self) -> bool {
+        true
+    }
+
+    fn map_color(&self, color: &mut Luma<u8>) {
+        *color = Luma([GRAY4_LEVELS[self.index_of(color)]]);
+    }
 }
 
 fn set_pixel(canvas: &mut GrayImage, x: i64, y: i64, value: u8) {
@@ -180,6 +213,7 @@ pub struct PackOptions {
     pub dither: bool,
     pub threshold: u8,
     pub invert: bool,
+    pub format: Format,
 }
 
 impl Default for PackOptions {
@@ -190,11 +224,13 @@ impl Default for PackOptions {
             dither: false,
             threshold: 128,
             invert: false,
+            format: Format::Mono,
         }
     }
 }
 
-/// Flatten, fit and threshold an image into the packed 1-bit wire format.
+/// Flatten, fit and quantise an image into the packed wire format for the
+/// requested pixel format.
 pub fn pack(image: &RgbaImage, options: &PackOptions) -> Result<Vec<u8>> {
     // Transparent pixels would otherwise threshold to black.
     let mut flattened = RgbaImage::from_pixel(image.width(), image.height(), Rgba([255; 4]));
@@ -211,27 +247,60 @@ pub fn pack(image: &RgbaImage, options: &PackOptions) -> Result<Vec<u8>> {
     };
 
     let mut fitted = scaled(&rotated, options.fit);
-    if options.dither {
-        imageops::dither(&mut fitted, &imageops::BiLevel);
-    } else {
-        for pixel in fitted.pixels_mut() {
-            pixel.0[0] = if pixel.0[0] >= options.threshold {
-                255
+
+    match options.format {
+        Format::Mono => {
+            if options.dither {
+                imageops::dither(&mut fitted, &imageops::BiLevel);
             } else {
-                0
-            };
+                for pixel in fitted.pixels_mut() {
+                    pixel.0[0] = if pixel.0[0] >= options.threshold {
+                        255
+                    } else {
+                        0
+                    };
+                }
+            }
+            Ok(pack_mono(&fitted, options.invert))
+        }
+        Format::Gray4 => {
+            if options.dither {
+                imageops::dither(&mut fitted, &Gray4);
+            } else {
+                for pixel in fitted.pixels_mut() {
+                    Gray4.map_color(pixel);
+                }
+            }
+            Ok(pack_gray4(&fitted, options.invert))
         }
     }
+}
 
-    // The wire contract packs black as one, MSB leftmost.
+/// The 1bpp wire contract packs black as one, MSB leftmost.
+fn pack_mono(image: &GrayImage, invert: bool) -> Vec<u8> {
     let mut packed = vec![0u8; (WIDTH as usize / 8) * HEIGHT as usize];
-    for (x, y, pixel) in fitted.enumerate_pixels() {
+    for (x, y, pixel) in image.enumerate_pixels() {
         let black = pixel.0[0] < 128;
-        if black != options.invert {
+        if black != invert {
             packed[y as usize * (WIDTH as usize / 8) + x as usize / 8] |= 0x80 >> (x % 8);
         }
     }
-    Ok(packed)
+    packed
+}
+
+/// The 2bpp wire contract carries darkness, extending 1bpp's "one is black":
+/// 0 is white and 3 is black, two bits per pixel, leftmost pixel in the high
+/// bits. The device splits those bits across the panel's two RAM planes.
+fn pack_gray4(image: &GrayImage, invert: bool) -> Vec<u8> {
+    let stride = WIDTH as usize / 4;
+    let mut packed = vec![0u8; stride * HEIGHT as usize];
+    for (x, y, pixel) in image.enumerate_pixels() {
+        let level = Gray4.index_of(pixel) as u8;
+        let darkness = if invert { level } else { 3 - level };
+        let shift = 6 - 2 * (x % 4);
+        packed[y as usize * stride + x as usize / 4] |= darkness << shift;
+    }
+    packed
 }
 
 pub fn load(path: &str, options: &PackOptions) -> Result<Vec<u8>> {
@@ -263,6 +332,92 @@ mod tests {
         )
         .unwrap();
         assert_eq!(inverted[0], 0x7F);
+    }
+
+    /// The 2bpp packing is the one thing no test on the host can catch by
+    /// eye, and the panel shows a silently wrong plane split as plausible
+    /// noise. Levels are pinned against Waveshare's display_4Gray, whose
+    /// plane bits equal this darkness encoding's low and high bit.
+    #[test]
+    fn gray4_levels_and_bit_order() {
+        let options = PackOptions {
+            format: Format::Gray4,
+            ..PackOptions::default()
+        };
+        let mut canvas = RgbaImage::from_pixel(WIDTH, HEIGHT, Rgba([255; 4]));
+        for (x, level) in GRAY4_LEVELS.iter().enumerate() {
+            canvas.put_pixel(x as u32, 0, Rgba([*level, *level, *level, 255]));
+        }
+
+        let data = pack(&canvas, &options).unwrap();
+        assert_eq!(data.len(), 96000);
+        // White=0, light=1, dark=2, black=3 packed into one byte, leftmost
+        // pixel in the high bits: 3, 2, 1, 0 reading dark to light.
+        assert_eq!(data[0], 0b11_10_01_00);
+        assert!(data[1..].iter().all(|&byte| byte == 0));
+
+        let inverted = pack(
+            &canvas,
+            &PackOptions {
+                invert: true,
+                ..options
+            },
+        )
+        .unwrap();
+        assert_eq!(inverted[0], 0b00_01_10_11);
+        // Inverting white fills the rest of the frame with black.
+        assert!(inverted[1..].iter().all(|&byte| byte == 0xFF));
+    }
+
+    /// Mid-tones must survive quantisation; rounding the wrong way collapses
+    /// them onto the rails and silently yields a bilevel image.
+    #[test]
+    fn gray4_keeps_four_distinct_tones() {
+        let mut canvas = RgbaImage::from_pixel(WIDTH, HEIGHT, Rgba([255; 4]));
+        for x in 0..WIDTH {
+            let tone = (x * 255 / (WIDTH - 1)) as u8;
+            for y in 0..HEIGHT {
+                canvas.put_pixel(x, y, Rgba([tone, tone, tone, 255]));
+            }
+        }
+        let data = pack(
+            &canvas,
+            &PackOptions {
+                format: Format::Gray4,
+                ..PackOptions::default()
+            },
+        )
+        .unwrap();
+
+        let mut seen = [false; 4];
+        for byte in &data {
+            for shift in [6, 4, 2, 0] {
+                seen[((byte >> shift) & 0b11) as usize] = true;
+            }
+        }
+        assert_eq!(seen, [true; 4], "a gradient must use all four tones");
+    }
+
+    /// Gray must not perturb the mono path, which the console depends on.
+    #[test]
+    fn mono_packing_is_unchanged_by_the_gray_option() {
+        let mut canvas = RgbaImage::from_pixel(WIDTH, HEIGHT, Rgba([255; 4]));
+        canvas.put_pixel(0, 0, Rgba([0, 0, 0, 255]));
+        canvas.put_pixel(5, 9, Rgba([90, 90, 90, 255]));
+
+        for dither in [false, true] {
+            for invert in [false, true] {
+                for threshold in [1u8, 128, 200] {
+                    let options = PackOptions {
+                        dither,
+                        invert,
+                        threshold,
+                        ..PackOptions::default()
+                    };
+                    assert_eq!(pack(&canvas, &options).unwrap().len(), 48000);
+                }
+            }
+        }
     }
 
     #[test]
